@@ -4,9 +4,9 @@ WANDB=$(pwd)/wandb_inject.txt
 cd $ROOT
 git clone https://github.com/pytorch/fairseq
 cd fairseq
-pip install --user --editable .
 if grep -Fq -f $WANDB fairseq_cli/train.py;then
     echo "injection already done!"
 else
     sed -i "/def main\(.*\)\:/r$WANDB" fairseq_cli/train.py
 fi
+pip install --user .
