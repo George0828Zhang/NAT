@@ -1,0 +1,2 @@
+    import wandb
+    wandb.init(project="nat", sync_tensorboard=True)
