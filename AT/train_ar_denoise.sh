@@ -36,6 +36,7 @@ fairseq-train --task denoising \
   --num-workers 4 \
   --fp16 \
   --max-update 50000 \
+  --log-format simple --log-interval 1 \
   $DATA
 
   # sample-break-mode {none, complete, complete_doc, eos}: 
