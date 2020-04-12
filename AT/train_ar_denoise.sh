@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
-TASK=ar_denoise
-DATA=../DATA/data-bin/wikitext-103
+TASK=ar_denoise2
+DATA=../DATA/data-bin/news.2017.en-de
 mkdir -p checkpoints/$TASK
 mkdir -p logdir/$TASK
 
-fairseq-train --task denoising \
+fairseq-train --task multilingual_denoising \
+  --multilang-sampling-alpha 0.7 \
+  --langs de,en \
   --sample-break-mode complete_doc \
   --mask 0.15 \
-  --mask-random 0.0 \
+  --mask-random 0.3 \
   --mask-length span-poisson \
+  --poisson-lambda 3.0 \
   --replace-length 1 \
-  --insert 0.0 \
-  --rotate 0.0 \
+  --insert 0.1 \
+  --rotate 0.1 \
+  --permute 0.1 \
   --permute-sentences 0.5 \
   --max-tokens 4096 \
   --update-freq 16 \
@@ -35,9 +39,13 @@ fairseq-train --task denoising \
   --tensorboard-logdir logdir/$TASK \
   --num-workers 4 \
   --fp16 \
-  --max-update 50000 \
+  --max-update 200000 \
   --log-format simple --log-interval 1 \
+  --save-interval-updates 150 --keep-interval-updates 2 \
+  --skip-invalid-size-inputs-valid-test \
   $DATA
+
+  # --add-lang-token (this has bug for now !
 
   # sample-break-mode {none, complete, complete_doc, eos}: 
   #   none: fills each sample with tokens-per-sample tokens
