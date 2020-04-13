@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-TASK=ar_denoise2
+TASK=ar_denoise
 DATA=../DATA/data-bin/news.2017.en-de
 mkdir -p checkpoints/$TASK
 mkdir -p logdir/$TASK
@@ -8,16 +8,16 @@ fairseq-train --task multilingual_denoising \
   --multilang-sampling-alpha 0.7 \
   --langs de,en \
   --sample-break-mode complete_doc \
-  --mask 0.15 \
+  --mask 0.35 \
   --mask-random 0.3 \
   --mask-length span-poisson \
-  --poisson-lambda 3.0 \
+  --poisson-lambda 3.5 \
   --replace-length 1 \
-  --insert 0.1 \
-  --rotate 0.1 \
-  --permute 0.1 \
-  --permute-sentences 0.5 \
-  --max-tokens 4096 \
+  --insert 0.0 \
+  --rotate 0.0 \
+  --permute 0.0 \
+  --permute-sentences 1.0 \
+  --max-tokens 4000 \
   --update-freq 16 \
   --tokens-per-sample 512 \
   --arch transformer_iwslt_de_en \

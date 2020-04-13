@@ -66,7 +66,7 @@ for l in en de; do \
     if [ -f $TRAIN ]; then
         echo "${TRAIN} found, skipping split."
     else
-        awk '{if (NR%3291 < 50)  print $0; }' $SOURCE > $TRAIN
+        awk '{if (NR%3291 != 50)  print $0; }' $SOURCE > $TRAIN
     fi
 done
 
@@ -89,12 +89,17 @@ done
 
 TRAIN=$TMP/news.2017.all.tok
 BPE_CODE=$TMP/code
-rm -f $TRAIN
-for SPLIT in train valid; do \
-    for l in en de; do \
-        cat $TMP/news.2017.${SPLIT}.${l}.tok >> $TRAIN
+# rm -f $TRAIN
+
+if [ -f $TRAIN ]; then
+    echo "${TRAIN} found, skipping concat."
+else
+    for SPLIT in train valid; do \
+        for l in en de; do \
+            cat $TMP/news.2017.${SPLIT}.${l}.tok >> $TRAIN
+        done
     done
-done
+fi
 
 echo "learn_bpe.py on ${TRAIN}..."
 if [ -f $BPE_CODE ]; then
@@ -108,7 +113,7 @@ for SPLIT in train valid; do \
         tok=$TMP/news.2017.${SPLIT}.${l}.tok
         bpe=$TMP/news.2017.${SPLIT}.${l}.tok.bpe
         echo "apply_bpe.py to ${tok}..."
-        if [ -f $BPE_CODE ]; then
+        if [ -f $bpe ]; then
             echo "$bpe found, skipping apply."
         else
             python $BPEROOT/apply_bpe.py -c $BPE_CODE < $tok > $bpe
@@ -145,6 +150,7 @@ fairseq-preprocess --source-lang de --target-lang en \
     --destdir data-bin/news.2017.en-de \
     --workers $WORKERS
 
+cp $BPE_CODE data-bin/news.2017.en-de/code
 cd data-bin/news.2017.en-de
 for l in en de; do \
     mkdir -p ${l}
@@ -154,7 +160,7 @@ for l in en de; do \
     done
     cp dict.${l}.txt dict.txt
 done
-cp $BPE_CODE code
+# cp $BPE_CODE code
 
 
 # for SPLIT in train valid; do \
