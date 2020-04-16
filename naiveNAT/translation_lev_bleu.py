@@ -28,6 +28,14 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
             '--noise',
             default='random_delete',
             choices=['random_delete', 'random_mask', 'no_noise', 'full_mask'])
+        parser.add_argument('--add-mask-token', action='store_true',
+                            help='add a mask token for model compatibility.')
+
+    def __init__(self, args, src_dict, tgt_dict):
+        if args.add_mask_token:
+            for d in [src_dict, tgt_dict]:
+                d.add_symbol('<mask>')
+        super().__init__(args, src_dict, tgt_dict)
 
     def load_dataset(self, split, epoch=1, combine=False, **kwargs):
         """Load a given dataset split.
