@@ -26,6 +26,18 @@ class Model(NATransformerModel):
 class MyDecoder(NATransformerDecoder):
     def build_decoder_layer(self, args, no_encoder_attn=False):
         return MyDecoderLayer(args, no_encoder_attn=no_encoder_attn, embed_positions = self.embed_positions)
+        
+        # embed_positions = (
+        #     PositionalEmbedding(
+        #         args.max_target_positions,
+        #         args.decoder_embed_dim,
+        #         self.padding_idx,
+        #         learned=args.decoder_layer_learned_pos,
+        #     )
+        #     if getattr(args, "decoder_positional_attention", False)
+        #     else None
+        # )
+        # return MyDecoderLayer(args, no_encoder_attn=no_encoder_attn, embed_positions = embed_positions)
 
 class MyDecoderLayer(TransformerDecoderLayer):
     def __init__(self, args, *posargs, embed_positions=None, **kwargs):
