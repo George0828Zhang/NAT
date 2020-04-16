@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-FAIRSEQDIR=$HOME/Projects/NATLab/fairseq
+FAIRSEQDIR:=$HOME/Projects/NATLab/fairseq
 ENCODER=$FAIRSEQDIR/examples/roberta/multiprocessing_bpe_encoder.py
 WORKERS=4
 

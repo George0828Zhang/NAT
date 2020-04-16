@@ -1,24 +1,36 @@
 #!/usr/bin/env bash
 TASK=nat_base
+DATA=../DATA/data-bin/iwslt14.tokenized.de-en
 mkdir -p checkpoints/$TASK
 mkdir -p logdir/$TASK
 
-fairseq-train \
-    /hdd/NAT/data-bin/iwslt14.tokenized.de-en/ \
+fairseq-train --task translation_lev_bleu --noise no_noise --user-dir . \
     -s de -t en \
-    --ddp-backend=no_c10d \
-    --task translation_lev \
-    --criterion nat_loss \
-    --arch myNAT \
+    --max-tokens 4000 \
+    --max-tokens-valid 1000 \
+    --empty-cache-freq 1 \
+    --update-freq 8 \
+    --arch nonautoregressive_transformer \
+    --encoder-ffn-embed-dim 1024 \
+    --encoder-attention-heads 4 \
+    --decoder-attention-heads 4 \
+    --apply-bert-init \
     --src-embedding-copy \
     --pred-length-offset \
     --length-loss-factor 0.1 \
-    --noise no_noise \
-    --optimizer adam --adam-betas '(0.9,0.98)' \
-    --lr 0.0005 --lr-scheduler inverse_sqrt \
-    --min-lr '1e-09' --warmup-updates 10000 \
-    --warmup-init-lr '1e-07' --label-smoothing 0.1 \
-    --dropout 0.3 --weight-decay 0.01 \
+    --share-all-embeddings \
+    --sg-length-pred \
+    --criterion nat_loss \
+    --label-smoothing 0.1 \
+    --optimizer adam \
+    --adam-betas '(0.9, 0.98)' \
+    --adam-eps 1e-9 \
+    --lr-scheduler inverse_sqrt \
+    --warmup-updates 4000 \
+    --lr 5e-4 \
+    --clip-norm 0.0 \
+    --dropout 0.3 \
+    --weight-decay 0.0001 \
     --no-epoch-checkpoints \
     --eval-bleu \
     --eval-bleu-args '{"beam": 5, "max_len_a": 1.2, "max_len_b": 10}' \
@@ -29,14 +41,7 @@ fairseq-train \
     --save-dir checkpoints/$TASK \
     --tensorboard-logdir logdir/$TASK \
     --num-workers 4 \
-    --pred-length-offset \
-    --length-loss-factor 0.1 \
-    --apply-bert-init \
-    --log-format 'simple' --log-interval 1 \
-    --fixed-validation-seed 7 \
-    --max-tokens 4096 \
-    --save-interval-updates 10000 \
-    --max-update 300000 \
-    --decoder_positional_attention \
-    --fp16 \
-    --user-dir .
+    --memory-efficient-fp16 \
+    --max-update 20000 \
+    --log-format simple --log-interval 1 \
+    $DATA

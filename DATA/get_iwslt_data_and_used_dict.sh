@@ -112,7 +112,7 @@ done
 # echo "learn_bpe.py on ${TRAIN}..."
 # python $BPEROOT/learn_bpe.py -s $BPE_TOKENS < $TRAIN > $BPE_CODE
 
-NEWSDIR=data-bin/news.2017.en-de
+NEWSDIR:=data-bin/news.2017.en-de
 BPE_CODE=$NEWSDIR/code
 DICT=$NEWSDIR/dict.txt
 
