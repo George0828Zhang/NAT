@@ -25,6 +25,7 @@ fairseq-train --task nat_multilingual_denoising --user-dir . \
   --encoder-ffn-embed-dim 1024 \
   --encoder-attention-heads 4 \
   --decoder-attention-heads 4 \
+  --share-all-embeddings \
   --apply-bert-init \
   --src-embedding-copy \
   --pred-length-offset \
