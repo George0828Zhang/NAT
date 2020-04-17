@@ -27,24 +27,8 @@ class Model(NATransformerModel):
 
 class MyDecoder(NATransformerDecoder):
 
-    def __init__(self, args, tgt_dict, embed_tokens):
-        super().__init__(args, tgt_dict, embed_tokens)
-
-    def build_pos_attention(self, embed_dim, args):
-        return MultiheadAttention(
-            embed_dim,
-            num_heads=args.decoder_positional_attention_head_num,
-            dropout=args.attention_dropout,
-            self_attention=True,
-        )
-
     def build_decoder_layer(self, args, no_encoder_attn=False):
-        if getattr(self, "pos_attn", None) == None:
-            self.pos_attn = self.build_pos_attention(
-            self.embed_dim,
-            args,
-        )
-        return MyDecoderLayer(args, no_encoder_attn=no_encoder_attn, embed_positions = self.embed_positions, pos_attn = self.pos_attn)
+        return MyDecoderLayer(args, no_encoder_attn=no_encoder_attn, embed_positions = self.embed_positions)
 
 class MyDecoderLayer(TransformerDecoderLayer):
 
@@ -53,7 +37,15 @@ class MyDecoderLayer(TransformerDecoderLayer):
         super().__init__(args, posargs, kwargs)
         self.decoder_positional_attention = getattr(args, "decoder_positional_attention", False)
         self.embed_positions = embed_positions
-        self.pos_attn = pos_attn
+        self.pos_attn = self.build_pos_attention(args.decoder_embed_dim, args)
+    
+    def build_pos_attention(self, embed_dim, args):
+        return MultiheadAttention(
+            embed_dim,
+            num_heads=args.decoder_positional_attention_head_num,
+            dropout=args.attention_dropout,
+            self_attention=True,
+        )
     
     def forward(
         self,
@@ -141,7 +133,7 @@ class MyDecoderLayer(TransformerDecoderLayer):
         if self.decoder_positional_attention:
             if self.normalize_before:
                 x = self.self_attn_layer_norm(x)
-            positions = self.embed_positions(x[..., 0].squeeze(-1))
+            positions = self.embed_positions(x[..., 0]) # [B, T, D] -> [B, T]
             residual = x
             x, attn = self.pos_attn(
                 query=positions,
