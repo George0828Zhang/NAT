@@ -1,5 +1,5 @@
 from fairseq.models.nat import NATransformerModel, NATransformerDecoder, base_architecture, FairseqNATDecoder, nonautoregressive_transformer_wmt_en_de
-from fairseq.modules import TransformerDecoderLayer, PositionalEmbedding
+from fairseq.modules import TransformerDecoderLayer, PositionalEmbedding, MultiheadAttention
 from fairseq.models import register_model, register_model_architecture
 from typing import Any, Dict, List, Optional, Tuple
 import torch
@@ -14,6 +14,8 @@ class Model(NATransformerModel):
         NATransformerModel.add_args(parser)
         parser.add_argument("--decoder_positional_attention", action="store_true",
                             help="add postional attention when decoding")
+        parser.add_argument("--decoder_positional_attention_head_num", type=int, 
+            help="num of heads of positional attention in decoder layers")
 
     @classmethod
     def build_decoder(cls, args, tgt_dict, embed_tokens):
@@ -24,27 +26,34 @@ class Model(NATransformerModel):
         return decoder
 
 class MyDecoder(NATransformerDecoder):
+
+    def __init__(self, args, tgt_dict, embed_tokens):
+        super().__init__(args, tgt_dict, embed_tokens)
+
+    def build_pos_attention(self, embed_dim, args):
+        return MultiheadAttention(
+            embed_dim,
+            num_heads=args.decoder_positional_attention_head_num,
+            dropout=args.attention_dropout,
+            self_attention=True,
+        )
+
     def build_decoder_layer(self, args, no_encoder_attn=False):
-        return MyDecoderLayer(args, no_encoder_attn=no_encoder_attn, embed_positions = self.embed_positions)
-        
-        # embed_positions = (
-        #     PositionalEmbedding(
-        #         args.max_target_positions,
-        #         args.decoder_embed_dim,
-        #         self.padding_idx,
-        #         learned=args.decoder_layer_learned_pos,
-        #     )
-        #     if getattr(args, "decoder_positional_attention", False)
-        #     else None
-        # )
-        # return MyDecoderLayer(args, no_encoder_attn=no_encoder_attn, embed_positions = embed_positions)
+        if getattr(self, "pos_attn", None) == None:
+            self.pos_attn = self.build_pos_attention(
+            self.embed_dim,
+            args,
+        )
+        return MyDecoderLayer(args, no_encoder_attn=no_encoder_attn, embed_positions = self.embed_positions, pos_attn = self.pos_attn)
 
 class MyDecoderLayer(TransformerDecoderLayer):
-    def __init__(self, args, *posargs, embed_positions=None, **kwargs):
+
+    def __init__(self, args, *posargs, embed_positions=None, pos_attn = None, **kwargs):
 
         super().__init__(args, posargs, kwargs)
         self.decoder_positional_attention = getattr(args, "decoder_positional_attention", False)
         self.embed_positions = embed_positions
+        self.pos_attn = pos_attn
     
     def forward(
         self,
@@ -134,7 +143,7 @@ class MyDecoderLayer(TransformerDecoderLayer):
                 x = self.self_attn_layer_norm(x)
             positions = self.embed_positions(x[..., 0].squeeze(-1))
             residual = x
-            x, attn = self.self_attn(
+            x, attn = self.pos_attn(
                 query=positions,
                 key=positions,
                 value=x,
@@ -209,3 +218,12 @@ class MyDecoderLayer(TransformerDecoderLayer):
 def myNAT(args):
     nonautoregressive_transformer_wmt_en_de(args)
     args.decoder_positional_attention = getattr(args, "decoder_positional_attention", False)
+    args.decoder_positional_attention_head_num = getattr(args, "decoder_positional_attention_head_num", 1)
+
+@register_model_architecture(
+    "myNAT", "gu"
+)
+def gu(args):
+    nonautoregressive_transformer_wmt_en_de(args)
+    args.decoder_positional_attention = getattr(args, "decoder_positional_attention", True)
+    args.decoder_positional_attention_head_num = getattr(args, "decoder_positional_attention_head_num", 1)
