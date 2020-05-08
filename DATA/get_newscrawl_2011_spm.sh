@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 WORKERS=4
-BPE_TOKENS=32000
+BPE_TOKENS=50000
 TMP=/media/george/Storage/DATA/news.2011.tmp
 RAW=/media/george/Storage/DATA/news.2011.raw
 BIN=data-bin
@@ -90,19 +90,20 @@ else
 fi
 
 # train-valid split
+echo "train test split..."
 for l in en de; do \
-    SOURCE=$RAW/news-docs.2011.${l}.filtered.decoded
+    SOURCE=$RAW/news-docs.2011.${l}.filtered # SOURCE=$RAW/news-docs.2011.${l}.filtered.decoded
     TRAIN=$TMP/news.2011.train.${l}
     VALID=$TMP/news.2011.valid.${l}
     if [ -f $VALID ]; then
         echo "${VALID} found, skipping split."
     else
-        awk '{if (NR%3291 == 51)  print $0; }' $SOURCE > $VALID
+        awk '{if (NR%3291 == 51)  print $0; }' $SOURCE | cut -f2 | base64 --decode > $VALID
     fi
     if [ -f $TRAIN ]; then
         echo "${TRAIN} found, skipping split."
     else
-        awk '{if (NR%3291 != 51)  print $0; }' $SOURCE > $TRAIN
+        awk '{if (NR%3291 != 51)  print $0; }' $SOURCE | cut -f2 | base64 --decode > $TRAIN
     fi
 done
 
