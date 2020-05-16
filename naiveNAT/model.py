@@ -218,4 +218,6 @@ def myNAT(args):
 def gu(args):
     nonautoregressive_transformer_wmt_en_de(args)
     args.decoder_positional_attention = getattr(args, "decoder_positional_attention", True)
-    args.decoder_positional_attention_head_num = getattr(args, "decoder_positional_attention_head_num", 1)
+    args.decoder_positional_attention_head_num = getattr(args, 
+    "decoder_positional_attention_head_num", 
+    args.decoder_attention_heads)

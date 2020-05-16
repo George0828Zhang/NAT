@@ -317,14 +317,14 @@ class NATMultilingualDenoisingTask(DenoisingTask):
         srcs, hyps, refs = [], [], []
         for i in range(len(gen_out)):
             hyps.append(decode(gen_out[i][0]['tokens']))
-            # refs.append(decode(
-            #     utils.strip_pad(sample['target'][i], self.target_dictionary.pad()),
-            #     escape_unk=True,  # don't count <unk> as matches to the hypo
-            # ))
-            # srcs.append(decode(
-            #     utils.strip_pad(sample['net_input']['src_tokens'][i], self.source_dictionary.pad()),
-            #     escape_unk=True,  # don't count <unk> as matches to the hypo
-            # ))
-        # logger.info('example source: ' + srcs[0])
+            refs.append(decode(
+                utils.strip_pad(sample['target'][i], self.target_dictionary.pad()),
+                escape_unk=True,  # don't count <unk> as matches to the hypo
+            ))
+            srcs.append(decode(
+                utils.strip_pad(sample['net_input']['src_tokens'][i], self.source_dictionary.pad()),
+                escape_unk=True,  # don't count <unk> as matches to the hypo
+            ))
+        logger.info('example source: ' + srcs[0])
         logger.info('example hypothesis: ' + hyps[0])
-        # logger.info('example reference: ' + refs[0])        
+        logger.info('example reference: ' + refs[0])        
