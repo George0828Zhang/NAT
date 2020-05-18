@@ -221,3 +221,43 @@ def gu(args):
     args.decoder_positional_attention_head_num = getattr(args, 
     "decoder_positional_attention_head_num", 
     args.decoder_attention_heads)
+
+@register_model_architecture(
+    "myNAT", "for_iwslt_14"
+)
+def for_iwslt_14(args):
+    args.encoder_embed_dim = getattr(args, "encoder_embed_dim", 256)
+    args.encoder_ffn_embed_dim = getattr(args, "encoder_ffn_embed_dim", 256)
+    args.encoder_layers = getattr(args, "encoder_layers", 5)
+    args.encoder_attention_heads = getattr(args, "encoder_attention_heads", 4)
+
+    args.decoder_embed_dim = getattr(args, "decoder_embed_dim", 256)
+    args.decoder_ffn_embed_dim = getattr(args, "decoder_ffn_embed_dim", 256)
+    args.decoder_layers = getattr(args, "decoder_layers", 5)
+    args.decoder_attention_heads = getattr(args, "decoder_attention_heads", 4)
+
+    args.decoder_positional_attention = getattr(args, "decoder_positional_attention", True)
+    args.decoder_positional_attention_head_num = getattr(args,
+    "decoder_positional_attention_head_num",
+    args.decoder_attention_heads)
+    nonautoregressive_transformer_wmt_en_de(args)
+
+@register_model_architecture(
+    "myNAT", "for_iwslt_16"
+)
+def for_iwslt_16(args):
+    args.encoder_embed_dim = getattr(args, "encoder_embed_dim", 278)
+    args.encoder_ffn_embed_dim = getattr(args, "encoder_ffn_embed_dim", 507)
+    args.encoder_layers = getattr(args, "encoder_layers", 5)
+    args.encoder_attention_heads = getattr(args, "encoder_attention_heads", 2)
+
+    args.decoder_embed_dim = getattr(args, "decoder_embed_dim", 278)
+    args.decoder_ffn_embed_dim = getattr(args, "decoder_ffn_embed_dim", 507)
+    args.decoder_layers = getattr(args, "decoder_layers", 5)
+    args.decoder_attention_heads = getattr(args, "decoder_attention_heads", 2)
+
+    args.decoder_positional_attention = getattr(args, "decoder_positional_attention", True)
+    args.decoder_positional_attention_head_num = getattr(args,
+    "decoder_positional_attention_head_num",
+    args.decoder_attention_heads)
+    nonautoregressive_transformer_wmt_en_de(args)
