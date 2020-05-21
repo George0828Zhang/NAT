@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
 
 # config
-DATASET=iwslt14 # {'wmt14', 'wmt17', 'iwslt14'}
+DATASET=$1  # {'wmt14', 'wmt17', 'iwslt14', 'iwslt14.en-es'}
 WORKERS=4
-OUTDIR=$DATASET-used-dict # if not set, use default value of dataset's name
+OUTDIR=$DATASET # if not set, use default value of dataset's name
+PREFIX=/media/george/Storage/DATA # put . to use pwd
 
-BPE_CODE=data-bin/news.2017.en-de/code
+BPE_CODE=Current
 # 'None', don't apply bpe
 # 'Current', learn on current dataset
 # other, use other as code
 
-BPE_TOKENS=40000 # only used when learning BPE
+BPE_TOKENS=80000 # only used when learning BPE
 
 # dictionary for binirize the data
-DICT=data-bin/news.2017.en-de/dict.txt # if DICT='None', learning dict on current dataset
+DICT=None # if DICT='None', learning dict on current dataset
 
 echo 'Cloning Subword NMT repository (for BPE pre-processing)...'
 git clone https://github.com/rsennrich/subword-nmt.git
@@ -27,6 +28,7 @@ if [ $DATASET = 'wmt17' ]; then
     DATASCRIPT='scripts/get_wmt17.sh'
     src=de
     tgt=en
+    langs='de en'
 
 elif [ $DATASET = 'wmt14' ]; then
     
@@ -36,6 +38,7 @@ elif [ $DATASET = 'wmt14' ]; then
     DATASCRIPT='scripts/get_wmt17.sh --icml17'
     src=de
     tgt=en
+    langs='de en'
 
 elif [ $DATASET = "iwslt14" ]; then
     
@@ -45,6 +48,25 @@ elif [ $DATASET = "iwslt14" ]; then
     DATASCRIPT='scripts/get_iwslt14.sh'
     src=de
     tgt=en
+    langs='de en'
+
+elif [ $DATASET = "iwslt14.en-es" ]; then
+    
+    OUTDIR=${OUTDIR:='iwslt14.en-es'}
+
+    DATADIR='iwslt14.en-es.raw'
+    DATASCRIPT='scripts/get_iwslt14_enes.sh'
+    src=es
+    tgt=en
+    langs='es en'
+
+elif [ $DATASET = "newscrawl" ]; then
+    
+    OUTDIR=${OUTDIR:='newscrawl'}
+
+    DATADIR='newscrawl.raw'
+    DATASCRIPT='scripts/get_newscrawl_mono.sh'
+    langs='en de fr es'
 
 else
     echo "DATASET: $DATASET is not supported"
@@ -56,10 +78,13 @@ if [ -d data-bin/$OUTDIR ]; then
     exit
 fi
 
+PREFIX=${PREFIX:='.'} # just in case
+DATADIR=$PREFIX/$DATADIR
+
 # check if dataset have already processed
 exist=1
 for split in train valid test; do
-    for l in $src $tgt;do
+    for l in $langs;do
         file=$DATADIR/tmp/$split.$l
         if [ -f $file ]; then
             echo "$file is exist"
@@ -73,7 +98,7 @@ done
 if [ $exist = 0 ]; then
 
     echo "download and tokenize $DATASET at $DATADIR"
-    bash $DATASCRIPT
+    bash $DATASCRIPT $PREFIX
 
 fi
 
@@ -81,7 +106,7 @@ fi
 if [ $BPE_CODE = 'None' ]; then
     echo "Don't apply BPE"
     for i in train valid test; do
-        for l in $src $tgt; do
+        for l in $langs; do
             cp $DATADIR/tmp/$i.$l $DATADIR/$i.$l
         done
     done
@@ -90,11 +115,34 @@ else
 
         echo "Didn't provide BPE code, learn on current dataset"
         BPE_CODE=$DATADIR/tmp/code
+        BPE_TRAIN=$DATADIR/tmp/all.bpe-train
 
         if [ -f $BPE_CODE ]; then
             echo "BPE CODE: $BPE_CODE is exist, skip learning"
         else
-            bash learn_bpe.sh $DATADIR/tmp $src $tgt $BPE_TOKENS
+            # bash learn_bpe.sh $DATADIR/tmp $src $tgt $BPE_TOKENS
+
+            if [ -f $BPE_TRAIN ]; then
+                echo "${BPE_TRAIN} found, skipping concat."
+            else
+                for l in $langs; do \
+                    default=1000000
+                    total=$(cat $DATADIR/tmp/train.${l} $DATADIR/tmp/valid.${l} | wc -l)
+                    echo "lang $l total: $total."
+                    if [ "$total" -gt "$default" ]; then
+                        cat $DATADIR/tmp/train.${l} $DATADIR/tmp/valid.${l} | \
+                        shuf -r -n $default >> $BPE_TRAIN
+                    else
+                        cat $DATADIR/tmp/train.${l} $DATADIR/tmp/valid.${l} >> $BPE_TRAIN
+                    fi                    
+                done
+            fi
+
+            echo "learn_bpe.py on ${BPE_TRAIN}..."
+            python $BPEROOT/learn_bpe.py -s $BPE_TOKENS < $BPE_TRAIN > $BPE_CODE
+            mkdir -p data-bin/$OUTDIR
+            cp $BPE_CODE data-bin/$OUTDIR/code
+            #######################################################
         fi
 
     else
@@ -108,7 +156,7 @@ else
 
     echo "use bpe code at $BPE_CODE"
 
-    for L in $src $tgt; do
+    for L in $langs; do
         for f in train.$L valid.$L test.$L; do
             echo "apply_bpe.py to ${f}..."
             python $BPEROOT/apply_bpe.py -c $BPE_CODE < $DATADIR/tmp/$f > $DATADIR/$f
@@ -140,4 +188,30 @@ if [ ! $DICT = 'None' ]; then
     preprocess_args="$preprocess_args --srcdict $DICT"
 fi
 
-fairseq-preprocess $preprocess_args
+
+if [ $DATASET = "newscrawl" ]; then
+    # langs='en de fr es'    
+    for l in $langs; do \
+        fairseq-preprocess \
+        --source-lang $l \
+        --task cross_lingual_lm \
+        --srcdict $DICT \
+        --only-source \
+        --trainpref $DATADIR/train \
+        --validpref $DATADIR/valid \
+        --destdir data-bin/$OUTDIR \
+        --workers $WORKERS
+    done
+
+    # cd data-bin/$OUTDIR
+    # for l in $langs; do \
+    #     mkdir -p ${l}
+    #     for SPLIT in train valid; do \
+    #         mv ${SPLIT}.*.${l}.bin ${l}/${SPLIT}.bin 
+    #         mv ${SPLIT}.*.${l}.idx ${l}/${SPLIT}.idx
+    #     done
+    #     cp dict.${l}.txt dict.txt
+    # done
+else
+    fairseq-preprocess $preprocess_args
+fi
