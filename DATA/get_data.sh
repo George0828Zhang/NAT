@@ -158,8 +158,12 @@ else
 
     for L in $langs; do
         for f in train.$L valid.$L test.$L; do
-            echo "apply_bpe.py to ${f}..."
-            python $BPEROOT/apply_bpe.py -c $BPE_CODE < $DATADIR/tmp/$f > $DATADIR/$f
+            if [ -f $DATADIR/$f ]; then
+                echo "found $DATADIR/$f, skipping apply_bpe"
+            else
+                echo "apply_bpe.py to ${f}..."
+                python $BPEROOT/apply_bpe.py -c $BPE_CODE < $DATADIR/tmp/$f > $DATADIR/$f
+            fi
         done
     done
 
@@ -191,27 +195,27 @@ fi
 
 if [ $DATASET = "newscrawl" ]; then
     echo "making union of vocab..."
-    mkdir -p data-bin/$OUTDIR
-    DICT=$DATADIR/vocab.all
+    POOL=$DATADIR/vocab.all
+    DICT=$DATADIR/vocab.uniq
     rm -f $DICT
     # create own dict for each lang first. 
     for l in $langs; do \
         echo "get $l vocab..."
-        cat $DATADIR/train.$l $DATADIR/valid.$l | python $BPEROOT/get_vocab.py | cut -d ' ' -f1 >> $DICT
+        cat $DATADIR/train.$l $DATADIR/valid.$l | python $BPEROOT/get_vocab.py | cut -d ' ' -f1 >> $POOL
     done
 
     # forge fake vocab from all langs
-    sort -u $DICT | sed "s/$/ 100/g" > data-bin/$OUTDIR/dict.txt
-    DICT=data-bin/$OUTDIR/dict.txt
+    sort -u $POOL | sed "s/$/ 100/g" > $DICT
     echo "dict size :"
-    wc -l $DICT
+    wc -l < $DICT
 
     for l in $langs; do \
         fairseq-preprocess \
+        --only-source \
         --source-lang $l \
         --srcdict $DICT \
-        --task cross_lingual_lm \
-        --only-source \
+        --joined-dictionary \
+        --bpe subword_nmt \
         --trainpref $DATADIR/train \
         --validpref $DATADIR/valid \
         --destdir data-bin/$OUTDIR \
@@ -226,7 +230,7 @@ if [ $DATASET = "newscrawl" ]; then
             mv $SPLIT.$l-None.$l.bin $l/$SPLIT.bin 
             mv $SPLIT.$l-None.$l.idx $l/$SPLIT.idx
         done
-        # cp dict.$l.txt dict.txt
+        cp dict.$l.txt dict.txt
     done
 else
     fairseq-preprocess $preprocess_args
