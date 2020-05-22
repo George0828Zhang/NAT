@@ -11,23 +11,28 @@ years="2007 2008"
 cd $PREFIX
 echo 'Cloning Moses github repository (for tokenization scripts)...'
 git clone https://github.com/moses-smt/mosesdecoder.git
-echo 'Cloning wmt16-scripts github repository (for accent scripts)...'
-git clone https://github.com/rsennrich/wmt16-scripts.git
 
 SCRIPTS=$(pwd)/mosesdecoder/scripts
 TOKENIZER=$SCRIPTS/tokenizer/tokenizer.perl
-LC=$SCRIPTS/tokenizer/lowercase.perl
+# LC=$SCRIPTS/tokenizer/lowercase.perl
 REPLACE_UNICODE_PUNCT=$SCRIPTS/tokenizer/replace-unicode-punctuation.perl
 NORM_PUNC=$SCRIPTS/tokenizer/normalize-punctuation.perl
 REM_NON_PRINT_CHAR=$SCRIPTS/tokenizer/remove-non-printing-char.perl
 # CLEAN=$SCRIPTS/training/clean-corpus-n.perl
 
-WMT16_SCRIPTS=$(pwd)/wmt16-scripts
-NORMALIZE_ROMANIAN=$WMT16_SCRIPTS/preprocess/normalise-romanian.py
-REMOVE_DIACRITICS=$WMT16_SCRIPTS/preprocess/remove-diacritics.py
+# echo 'Cloning wmt16-scripts github repository (for accent scripts)...'
+# git clone https://github.com/rsennrich/wmt16-scripts.git
+# WMT16_SCRIPTS=$(pwd)/wmt16-scripts
+# NORMALIZE_ROMANIAN=$WMT16_SCRIPTS/preprocess/normalise-romanian.py
+# REMOVE_DIACRITICS=$WMT16_SCRIPTS/preprocess/remove-diacritics.py
+
+echo 'Cloning XLM github repository (for lowercase remove accent scripts)...'
+git clone https://github.com/facebookresearch/XLM.git
+LOWER_REMOVE_ACCENT=$(pwd)/XLM/tools/lowercase_and_remove_accent.py
 
 cd $TMP
 
+rm -f vocab_xnli_15 codes_xnli_15
 wget https://dl.fbaipublicfiles.com/XLM/vocab_xnli_15
 wget https://dl.fbaipublicfiles.com/XLM/codes_xnli_15
 cat codes_xnli_15 | cut -d ' ' -f1,2 > codes_xnli_15
@@ -90,9 +95,8 @@ for l in $langs; do \
             $REPLACE_UNICODE_PUNCT | \
             $NORM_PUNC -l $l | \
             $REM_NON_PRINT_CHAR | \
-            $REMOVE_DIACRITICS | \
             $TOKENIZER -l $l -no-escape -threads $WORKERS | \
-            $LC > $tok
+            python $LOWER_REMOVE_ACCENT > $tok
             # $REMOVE_DIACRITICS | \ maybe not suitable for generation task.
     fi    
 done
@@ -104,8 +108,8 @@ for l in $langs; do \
     if [ -f $tmp/valid.$l ] && [ -f $tmp/train.$l ]; then
         echo "${tmp}/valid.${l} ${tmp}/train.${l} found, skipping split"
     else
-        shuf $tok | awk '{if (NR < 3000)  print $0; }' > $tmp/valid.$l
-        shuf $tok | awk '{if (NR >= 3000)  print $0; }' > $tmp/train.$l
+        cat $tok | awk '{if (NR < 3000)  print $0; }' > $tmp/valid.$l
+        cat $tok | awk '{if (NR >= 3000)  print $0; }' > $tmp/train.$l
     fi
 done
 

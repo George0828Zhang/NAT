@@ -6,7 +6,7 @@ WORKERS=4
 OUTDIR=$DATASET # if not set, use default value of dataset's name
 PREFIX=/media/george/Storage/DATA # put . to use pwd
 
-BPE_CODE=Current
+BPE_CODE=$PREFIX/newscrawl.raw/codes_xnli_15
 # 'None', don't apply bpe
 # 'Current', learn on current dataset
 # other, use other as code
@@ -14,7 +14,7 @@ BPE_CODE=Current
 BPE_TOKENS=80000 # only used when learning BPE
 
 # dictionary for binirize the data
-DICT=None # if DICT='None', learning dict on current dataset
+DICT=$PREFIX/newscrawl.raw/vocab_xnli_15 # if DICT='None', learning dict on current dataset
 
 echo 'Cloning Subword NMT repository (for BPE pre-processing)...'
 git clone https://github.com/rsennrich/subword-nmt.git
@@ -203,15 +203,16 @@ if [ $DATASET = "newscrawl" ]; then
         --workers $WORKERS
     done
 
-    # cd data-bin/$OUTDIR
-    # for l in $langs; do \
-    #     mkdir -p ${l}
-    #     for SPLIT in train valid; do \
-    #         mv ${SPLIT}.*.${l}.bin ${l}/${SPLIT}.bin 
-    #         mv ${SPLIT}.*.${l}.idx ${l}/${SPLIT}.idx
-    #     done
-    #     cp dict.${l}.txt dict.txt
-    # done
+    # format for multilingual denoising.
+    cd data-bin/$OUTDIR
+    for l in $langs; do \
+        mkdir -p $l
+        for SPLIT in train valid; do \
+            mv $SPLIT.$l-None.$l.bin $l/$SPLIT.bin 
+            mv $SPLIT.$l-None.$l.idx $l/$SPLIT.idx
+        done
+        cp dict.$l.txt dict.txt
+    done
 else
     fairseq-preprocess $preprocess_args
 fi
