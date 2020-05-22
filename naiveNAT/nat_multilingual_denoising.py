@@ -129,7 +129,8 @@ class NATMultilingualDenoisingTask(DenoisingTask):
                 assert os.path.exists(os.path.join(data_path, name)), "all the languages must exist"
 
         logger.info("| Training on {0} languages: {1}".format(len(languages), languages))
-        logger.info("| Language to id mapping: ", {
+        # Changed
+        logger.info("| Language to id mapping: %s", {
                 lang: id for id, lang in enumerate(languages)
             }
         )
@@ -191,13 +192,13 @@ class NATMultilingualDenoisingTask(DenoisingTask):
         if split == self.args.train_subset:
             # For train subset, additionally up or down sample languages.
             sample_probs = self._get_sample_prob(dataset_lengths)
-            logger.info("| Sample probability by language: ", {
+            logger.info("| Sample probability by language: %s", {
                     lang: "{0:.4f}".format(sample_probs[id])
                     for id, lang in enumerate(languages)
                 }
             )
             size_ratio = (sample_probs * dataset_lengths.sum()) / dataset_lengths
-            logger.info("| Up/Down Sampling ratio by language: ", {
+            logger.info("| Up/Down Sampling ratio by language: %s", {
                     lang: "{0:.2f}".format(size_ratio[id])
                     for id, lang in enumerate(languages)
                 }
