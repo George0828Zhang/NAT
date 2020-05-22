@@ -6,7 +6,7 @@ WORKERS=4
 OUTDIR=$DATASET # if not set, use default value of dataset's name
 PREFIX=/media/george/Storage/DATA # put . to use pwd
 
-BPE_CODE=$PREFIX/newscrawl.raw/codes_xnli_15
+BPE_CODE=Current
 # 'None', don't apply bpe
 # 'Current', learn on current dataset
 # other, use other as code
@@ -14,7 +14,7 @@ BPE_CODE=$PREFIX/newscrawl.raw/codes_xnli_15
 BPE_TOKENS=80000 # only used when learning BPE
 
 # dictionary for binirize the data
-DICT=$PREFIX/newscrawl.raw/vocab_xnli_15 # if DICT='None', learning dict on current dataset
+DICT=None # if DICT='None', learning dict on current dataset
 
 echo 'Cloning Subword NMT repository (for BPE pre-processing)...'
 git clone https://github.com/rsennrich/subword-nmt.git
@@ -190,12 +190,27 @@ fi
 
 
 if [ $DATASET = "newscrawl" ]; then
-    # langs='en de fr es'    
+    echo "making union of vocab..."
+    mkdir -p data-bin/$OUTDIR
+    DICT=$DATADIR/vocab.all
+    rm -f $DICT
+    # create own dict for each lang first. 
+    for l in $langs; do \
+        echo "get $l vocab..."
+        cat $DATADIR/train.$l $DATADIR/valid.$l | python $BPEROOT/get_vocab.py | cut -d ' ' -f1 >> $DICT
+    done
+
+    # forge fake vocab from all langs
+    sort -u $DICT | sed "s/$/ 100/g" > data-bin/$OUTDIR/dict.txt
+    DICT=data-bin/$OUTDIR/dict.txt
+    echo "dict size :"
+    wc -l $DICT
+
     for l in $langs; do \
         fairseq-preprocess \
         --source-lang $l \
-        --task cross_lingual_lm \
         --srcdict $DICT \
+        --task cross_lingual_lm \
         --only-source \
         --trainpref $DATADIR/train \
         --validpref $DATADIR/valid \
@@ -211,7 +226,7 @@ if [ $DATASET = "newscrawl" ]; then
             mv $SPLIT.$l-None.$l.bin $l/$SPLIT.bin 
             mv $SPLIT.$l-None.$l.idx $l/$SPLIT.idx
         done
-        cp dict.$l.txt dict.txt
+        # cp dict.$l.txt dict.txt
     done
 else
     fairseq-preprocess $preprocess_args

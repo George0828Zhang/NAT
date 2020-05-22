@@ -32,10 +32,10 @@ LOWER_REMOVE_ACCENT=$(pwd)/XLM/tools/lowercase_and_remove_accent.py
 
 cd $TMP
 
-rm -f vocab_xnli_15 codes_xnli_15
-wget https://dl.fbaipublicfiles.com/XLM/vocab_xnli_15
-wget https://dl.fbaipublicfiles.com/XLM/codes_xnli_15
-cat codes_xnli_15 | cut -d ' ' -f1,2 > codes_xnli_15
+# rm -f vocab_xnli_15 codes_xnli_15
+# wget https://dl.fbaipublicfiles.com/XLM/vocab_xnli_15
+# wget https://dl.fbaipublicfiles.com/XLM/codes_xnli_15
+# cat codes_xnli_15 | cut -d ' ' -f1,2 > codes_xnli_15
 
 URLS=()
 FILES=()
