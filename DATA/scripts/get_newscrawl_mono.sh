@@ -14,7 +14,7 @@ git clone https://github.com/moses-smt/mosesdecoder.git
 
 SCRIPTS=$(pwd)/mosesdecoder/scripts
 TOKENIZER=$SCRIPTS/tokenizer/tokenizer.perl
-# LC=$SCRIPTS/tokenizer/lowercase.perl
+LC=$SCRIPTS/tokenizer/lowercase.perl
 REPLACE_UNICODE_PUNCT=$SCRIPTS/tokenizer/replace-unicode-punctuation.perl
 NORM_PUNC=$SCRIPTS/tokenizer/normalize-punctuation.perl
 REM_NON_PRINT_CHAR=$SCRIPTS/tokenizer/remove-non-printing-char.perl
@@ -26,9 +26,9 @@ REM_NON_PRINT_CHAR=$SCRIPTS/tokenizer/remove-non-printing-char.perl
 # NORMALIZE_ROMANIAN=$WMT16_SCRIPTS/preprocess/normalise-romanian.py
 # REMOVE_DIACRITICS=$WMT16_SCRIPTS/preprocess/remove-diacritics.py
 
-echo 'Cloning XLM github repository (for lowercase remove accent scripts)...'
-git clone https://github.com/facebookresearch/XLM.git
-LOWER_REMOVE_ACCENT=$(pwd)/XLM/tools/lowercase_and_remove_accent.py
+# echo 'Cloning XLM github repository (for lowercase remove accent scripts)...'
+# git clone https://github.com/facebookresearch/XLM.git
+# LOWER_REMOVE_ACCENT=$(pwd)/XLM/tools/lowercase_and_remove_accent.py
 
 cd $TMP
 
@@ -96,7 +96,8 @@ for l in $langs; do \
             $NORM_PUNC -l $l | \
             $REM_NON_PRINT_CHAR | \
             $TOKENIZER -l $l -no-escape -threads $WORKERS | \
-            python $LOWER_REMOVE_ACCENT > $tok
+            $LC > $tok
+            # python $LOWER_REMOVE_ACCENT > $tok
             # $REMOVE_DIACRITICS | \ maybe not suitable for generation task.
     fi    
 done

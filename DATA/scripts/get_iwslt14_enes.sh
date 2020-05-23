@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-PREFIX=$1 #/media/george/Storage/DATA
+PREFIX=${1:='.'}
+WORKERS=4
 TMP=$PREFIX/iwslt14.en-es.raw
 mkdir -p $TMP
 
@@ -10,6 +11,9 @@ git clone https://github.com/moses-smt/mosesdecoder.git
 SCRIPTS=$(pwd)/mosesdecoder/scripts
 TOKENIZER=$SCRIPTS/tokenizer/tokenizer.perl
 LC=$SCRIPTS/tokenizer/lowercase.perl
+REPLACE_UNICODE_PUNCT=$SCRIPTS/tokenizer/replace-unicode-punctuation.perl
+NORM_PUNC=$SCRIPTS/tokenizer/normalize-punctuation.perl
+REM_NON_PRINT_CHAR=$SCRIPTS/tokenizer/remove-non-printing-char.perl
 CLEAN=$SCRIPTS/training/clean-corpus-n.perl
 cd $TMP
 
@@ -48,13 +52,18 @@ for l in $src $tgt; do
     grep -v '<keywords>' | \
     grep -v '</title>' | \
     grep -v '</description>' | \
-    perl $TOKENIZER -threads 8 -l $l > $TMP/$tok
+    $REPLACE_UNICODE_PUNCT | \
+            $NORM_PUNC -l $l | \
+            $REM_NON_PRINT_CHAR | \
+            $TOKENIZER -l $l -no-escape -threads $WORKERS | \
+            $LC > $TMP/$f
+    # perl $TOKENIZER -threads 8 -l $l > $TMP/$tok
     echo ""
 done
-perl $CLEAN -ratio 1.5 $TMP/train.tags.$lang.tok $src $tgt $TMP/train.tags.$lang.clean 1 175
-for l in $src $tgt; do
-    perl $LC < $TMP/train.tags.$lang.clean.$l > $TMP/train.tags.$lang.$l
-done
+# perl $CLEAN -ratio 1.5 $TMP/train.tags.$lang.tok $src $tgt $TMP/train.tags.$lang.clean 1 175
+# for l in $src $tgt; do
+#     perl $LC < $TMP/train.tags.$lang.clean.$l > $TMP/train.tags.$lang.$l
+# done
 
 echo "pre-processing valid/test data..."
 for l in $src $tgt; do
@@ -66,8 +75,13 @@ for l in $src $tgt; do
             sed -e 's/<seg id="[0-9]*">\s*//g' | \
             sed -e 's/\s*<\/seg>\s*//g' | \
             sed -e "s/\’/\'/g" | \
-        perl $TOKENIZER -threads 8 -l $l | \
-        perl $LC > $f
+            $REPLACE_UNICODE_PUNCT | \
+            $NORM_PUNC -l $l | \
+            $REM_NON_PRINT_CHAR | \
+            $TOKENIZER -l $l -no-escape -threads $WORKERS | \
+            $LC > $f
+        # perl $TOKENIZER -threads 8 -l $l | \
+        # perl $LC > $f
         echo ""
     done
 done
