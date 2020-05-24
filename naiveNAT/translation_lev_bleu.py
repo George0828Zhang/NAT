@@ -7,10 +7,13 @@ import os
 
 import torch
 
+from fairseq.data import LanguagePairDataset
 from fairseq.utils import new_arange
 from fairseq.tasks import register_task
 from fairseq.tasks.translation import TranslationTask, load_langpair_dataset, EVAL_BLEU_ORDER
 from fairseq import utils
+import logging
+logger = logging.getLogger(__name__)
 
 @register_task('translation_lev_bleu')
 class TranslationLevenshteinBLEUTask(TranslationTask):
@@ -30,11 +33,28 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
             choices=['random_delete', 'random_mask', 'no_noise', 'full_mask'])
         parser.add_argument('--add-mask-token', action='store_true',
                             help='add a mask token for model compatibility.')
+        parser.add_argument('--add-lang-token', default=False, action='store_true')
+        parser.add_argument('--use-lang-token', default=False, action='store_true')
+        parser.add_argument('--langs', default=None, metavar='LANG',
+                            help='comma-separated list of monolingual language, for example, "en,de,fr"'
+                                 'be careful these langs are what you used for pretraining (the same order),'
+                                 'not for finetuning.'
+                                 'you should always add all pretraining language idx during finetuning.')
 
     def __init__(self, args, src_dict, tgt_dict):
         if args.add_mask_token:
             for d in [src_dict, tgt_dict]:
                 d.add_symbol('<mask>')
+        if args.add_lang_token:
+            if args.langs is None:
+                raise (f'please provide langs for add-lang-token or use-lang-token.')
+            else:
+                languages = args.langs.split(',')
+            for d in [src_dict, tgt_dict]:
+                for lang in languages:
+                    d.add_symbol('[{}]'.format(lang))
+        elif args.use_lang_token:
+            raise (f'please enable add-lang-token for use-lang-token to work.')
         super().__init__(args, src_dict, tgt_dict)
 
     def load_dataset(self, split, epoch=1, combine=False, **kwargs):
@@ -59,60 +79,10 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
             max_source_positions=self.args.max_source_positions,
             max_target_positions=self.args.max_target_positions,
             prepend_bos=True,
+            append_source_id=self.args.use_lang_token,
         )
 
     def inject_noise(self, target_tokens):
-        def _random_delete(target_tokens):
-            pad = self.tgt_dict.pad()
-            bos = self.tgt_dict.bos()
-            eos = self.tgt_dict.eos()
-
-            max_len = target_tokens.size(1)
-            target_mask = target_tokens.eq(pad)
-            target_score = target_tokens.clone().float().uniform_()
-            target_score.masked_fill_(
-                target_tokens.eq(bos) | target_tokens.eq(eos), 0.0)
-            target_score.masked_fill_(target_mask, 1)
-            target_score, target_rank = target_score.sort(1)
-            target_length = target_mask.size(1) - target_mask.float().sum(
-                1, keepdim=True)
-
-            # do not delete <bos> and <eos> (we assign 0 score for them)
-            target_cutoff = 2 + ((target_length - 2) * target_score.new_zeros(
-                target_score.size(0), 1).uniform_()).long()
-            target_cutoff = target_score.sort(1)[1] >= target_cutoff
-
-            prev_target_tokens = target_tokens.gather(
-                1, target_rank).masked_fill_(target_cutoff, pad).gather(
-                    1,
-                    target_rank.masked_fill_(target_cutoff,
-                                             max_len).sort(1)[1])
-            prev_target_tokens = prev_target_tokens[:, :prev_target_tokens.
-                                                    ne(pad).sum(1).max()]
-
-            return prev_target_tokens
-
-        def _random_mask(target_tokens):
-            pad = self.tgt_dict.pad()
-            bos = self.tgt_dict.bos()
-            eos = self.tgt_dict.eos()
-            unk = self.tgt_dict.unk()
-
-            target_masks = target_tokens.ne(pad) & \
-                           target_tokens.ne(bos) & \
-                           target_tokens.ne(eos)
-            target_score = target_tokens.clone().float().uniform_()
-            target_score.masked_fill_(~target_masks, 2.0)
-            target_length = target_masks.sum(1).float()
-            target_length = target_length * target_length.clone().uniform_()
-            target_length = target_length + 1  # make sure to mask at least one token.
-
-            _, target_rank = target_score.sort(1)
-            target_cutoff = new_arange(target_rank) < target_length[:, None].long()
-            prev_target_tokens = target_tokens.masked_fill(
-                target_cutoff.scatter(1, target_rank, target_cutoff), unk)
-            return prev_target_tokens
-
         def _full_mask(target_tokens):
             pad = self.tgt_dict.pad()
             bos = self.tgt_dict.bos()
@@ -123,11 +93,7 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
                 eos) | target_tokens.eq(pad)
             return target_tokens.masked_fill(~target_mask, unk)
 
-        if self.args.noise == 'random_delete':
-            return _random_delete(target_tokens)
-        elif self.args.noise == 'random_mask':
-            return _random_mask(target_tokens)
-        elif self.args.noise == 'full_mask':
+        if self.args.noise == 'full_mask':
             return _full_mask(target_tokens)
         elif self.args.noise == 'no_noise':
             return target_tokens
@@ -137,7 +103,7 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
     def build_generator(self, models, args):
         # add models input to match the API for SequenceGenerator
         from fairseq.iterative_refinement_generator import IterativeRefinementGenerator
-        return IterativeRefinementGenerator(
+        gen = IterativeRefinementGenerator(
             self.target_dictionary,
             eos_penalty=getattr(args, 'iter_decode_eos_penalty', 0.0),
             max_iter=getattr(args, 'iter_decode_max_iter', 10),
@@ -146,6 +112,22 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
             decoding_format=getattr(args, 'decoding_format', None),
             adaptive=not getattr(args, 'iter_decode_force_max_iter', False),
             retain_history=getattr(args, 'retain_iter_history', False))
+
+        if self.args.use_lang_token:
+            gen.eos=self.target_dictionary.index('[{}]'.format(self.args.target_lang))
+        return gen
+
+    def build_dataset_for_inference(self, src_tokens, src_lengths):
+        if self.args.use_lang_token:
+            src_lang_id = self.source_dictionary.index('[{}]'.format(self.args.source_lang))
+            source_tokens = []
+            for s_t in src_tokens:
+                s_t = torch.cat([s_t, s_t.new(1).fill_(src_lang_id)])
+                source_tokens.append(s_t)
+            dataset = LanguagePairDataset(src_tokens, src_lengths, self.source_dictionary)
+            return dataset
+        else:
+            return super().build_dataset_for_inference(src_tokens, src_lengths)
 
     def train_step(self,
                    sample,
@@ -187,7 +169,43 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
                     logging_output['_bleu_totals_' + str(i)] = bleu.totals[i]
         return loss, sample_size, logging_output
 
-    # inherited from translation task
+    def _inference_with_bleu(self, generator, sample, model):
+        import sacrebleu
+
+        def decode(toks, escape_unk=False):
+            s = self.tgt_dict.string(
+                toks.int().cpu(),
+                self.args.eval_bleu_remove_bpe,
+                escape_unk=escape_unk,
+                extra_symbols_to_ignore=[
+                    self.tgt_dict.index('[{}]'.format(self.args.source_lang)),
+                    self.tgt_dict.index('[{}]'.format(self.args.target_lang))
+                ]
+            )
+            if self.tokenizer:
+                s = self.tokenizer.decode(s)
+            return s
+
+        gen_out = self.inference_step(generator, [model], sample, None)
+        hyps, refs = [], []
+        for i in range(len(gen_out)):
+            hyps.append(decode(gen_out[i][0]['tokens']))
+            refs.append(decode(
+                utils.strip_pad(sample['target'][i], self.tgt_dict.pad()),
+                escape_unk=True,  # don't count <unk> as matches to the hypo
+            ))
+        if self.args.eval_bleu_print_samples:
+            logger.info('example hypothesis: ' + hyps[0])
+            logger.info('example reference: ' + refs[0])
+        if self.args.eval_tokenized_bleu:
+            return sacrebleu.corpus_bleu(hyps, [refs], tokenize='none')
+        else:
+            return sacrebleu.corpus_bleu(hyps, [refs])
+
+
+    ###################################
+    # inherited from translation task #
+    ###################################
 
     # def valid_step(self, sample, model, criterion):
     #     loss, sample_size, logging_output = super().valid_step(sample, model, criterion)
@@ -241,33 +259,8 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
 
     #             metrics.log_derived('bleu', compute_bleu)
 
+    # def inference_step(self, generator, models, sample, prefix_tokens=None):
+    #     with torch.no_grad():
+    #         return generator.generate(models, sample, prefix_tokens=prefix_tokens)
 
-
-    # def _inference_with_bleu(self, generator, sample, model):
-    #     import sacrebleu
-
-    #     def decode(toks, escape_unk=False):
-    #         s = self.tgt_dict.string(
-    #             toks.int().cpu(),
-    #             self.args.eval_bleu_remove_bpe,
-    #             escape_unk=escape_unk,
-    #         )
-    #         if self.tokenizer:
-    #             s = self.tokenizer.decode(s)
-    #         return s
-
-    #     gen_out = self.inference_step(generator, [model], sample, None)
-    #     hyps, refs = [], []
-    #     for i in range(len(gen_out)):
-    #         hyps.append(decode(gen_out[i][0]['tokens']))
-    #         refs.append(decode(
-    #             utils.strip_pad(sample['target'][i], self.tgt_dict.pad()),
-    #             escape_unk=True,  # don't count <unk> as matches to the hypo
-    #         ))
-    #     if self.args.eval_bleu_print_samples:
-    #         logger.info('example hypothesis: ' + hyps[0])
-    #         logger.info('example reference: ' + refs[0])
-    #     if self.args.eval_tokenized_bleu:
-    #         return sacrebleu.corpus_bleu(hyps, [refs], tokenize='none')
-    #     else:
-    #         return sacrebleu.corpus_bleu(hyps, [refs])
+    

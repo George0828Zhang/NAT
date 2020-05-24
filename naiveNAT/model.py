@@ -6,16 +6,24 @@ import torch
 from torch import Tensor
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
 import torch.nn.functional as F
+import re
+import pdb
+import logging
+
+logger = logging.getLogger(__name__)
+
 @register_model("myNAT")
 class Model(NATransformerModel):
 
     @staticmethod
     def add_args(parser):
         NATransformerModel.add_args(parser)
-        parser.add_argument("--decoder_positional_attention", action="store_true",
+        parser.add_argument("--decoder-positional-attention", action="store_true",
                             help="add postional attention when decoding")
-        parser.add_argument("--decoder_positional_attention_head_num", type=int, 
+        parser.add_argument("--decoder-positional-attention-head-num", type=int, 
             help="num of heads of positional attention in decoder layers")
+        parser.add_argument("--load-encoder-only", action="store_true", #type=bool, nargs='?', const=True, default=False,
+        help="whether only load encoder states from checkpoint.")
 
     @classmethod
     def build_decoder(cls, args, tgt_dict, embed_tokens):
@@ -24,6 +32,29 @@ class Model(NATransformerModel):
         if getattr(args, "apply_bert_init", False):
             decoder.apply(init_bert_params)
         return decoder
+
+    def load_state_dict(self, state_dict, strict=True, args=None):
+        """Copies parameters and buffers from *state_dict* into this module and
+        its descendants.
+
+        Overrides the method in :class:`nn.Module`. Compared with that method
+        this additionally "upgrades" *state_dicts* from old checkpoints.
+        """
+        
+        """Overrides fairseq_model.py
+
+        """
+        # pdb.set_trace()
+        # if getattr(args, "load_encoder_only", False)--gen-subset
+        if getattr(args, "load_encoder_only", False):
+            logger.warning("Will only load encoder weights!")
+            cur = self.state_dict()
+            for param in state_dict:
+                if re.match(r"^encoder\.", param) is not None:
+                    cur[param] = state_dict[param]
+            state_dict = cur
+
+        return super().load_state_dict(state_dict, strict=strict, args=args)
 
 class MyDecoder(NATransformerDecoder):
 
