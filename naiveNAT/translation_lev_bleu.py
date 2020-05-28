@@ -239,7 +239,7 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
             )
             if self.tokenizer:
                 s = self.tokenizer.decode(s)
-            return s
+            return s if s else '<unk>'
 
         gen_out = self.inference_step(generator, [model], sample, None)
         hyps, refs = [], []
