@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
 # config
-DATASET=$1  # {'wmt14', 'wmt17', 'iwslt14', 'iwslt14.en-es'}
+DATASET=$1  # {'wmt14', 'wmt17', 'iwslt14', 'iwslt14.en-es', 'europarl'}
 WORKERS=4
 OUTDIR=$DATASET # if not set, use default value of dataset's name
-PREFIX=/media/george/Storage/DATA # put . to use pwd
+PREFIX=/hdd/nat-data # put . to use pwd
 
 BPE_CODE=Current
 # 'None', don't apply bpe
@@ -67,6 +67,14 @@ elif [ $DATASET = "newscrawl" ]; then
     DATADIR='newscrawl.raw'
     DATASCRIPT='scripts/get_newscrawl_mono.sh'
     langs='en de fr es'
+
+elif [ $DATASET = "europarl" ]; then
+
+    OUTDIR=${OUTDIR:='europarl'}
+
+    DATADIR='europarl.raw'
+    DATASCRIPT='scripts/get_europarl.sh'
+    langs='cs de en es fi fr lt pl pt'
 
 else
     echo "DATASET: $DATASET is not supported"
@@ -193,7 +201,7 @@ if [ ! $DICT = 'None' ]; then
 fi
 
 
-if [ $DATASET = "newscrawl" ]; then
+if [ $DATASET = "newscrawl" ] || [ $DATASET = 'europarl' ]; then
     echo "making union of vocab..."
     POOL=$DATADIR/vocab.all
     DICT=$DATADIR/vocab.uniq
