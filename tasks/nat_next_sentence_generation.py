@@ -19,8 +19,6 @@ from fairseq.data import (
     SortDataset,
     TokenBlockDataset,
 )
-from .nat_multilingual_denoising import NATMultilingualDenoisingTask
-from .next_sentence_dataset import NextSentenceDataset
 from fairseq.data.encoders.utils import get_whole_word_mask
 from fairseq.tasks import register_task
 
@@ -29,18 +27,23 @@ import torch
 import json
 from argparse import Namespace
 from fairseq.data import encoders
-from fairseq.tasks.denoising.denoising import DenoisingTask
 from fairseq import utils
 from fairseq.utils import new_arange
+from .nat_multilingual_denoising import NATMultilingualDenoisingTask
+from .next_sentence_dataset import NextSentenceDataset
 
 logger = logging.getLogger(__name__)
 
 
-@register_task('nat_multilingual_denoising')
-class NATMultilingualDenoisingTask(NATMultilingualDenoisingTask):
+@register_task('nat_next_sentence_generation')
+class NATNextSentenceGenerationTask(NATMultilingualDenoisingTask):
     @staticmethod
     def add_args(parser):
         NATMultilingualDenoisingTask.add_args(parser)
+        parser.add_argument(
+            '--randomize-mask-ratio', action="store_true",
+            help='use random ratio to mask input.'
+        )
 
     def load_dataset(self, split, epoch=1, combine=False, **kwargs):
         """Load a given dataset split.
@@ -217,17 +220,22 @@ class NATMultilingualDenoisingTask(NATMultilingualDenoisingTask):
                 s = self.tokenizer.decode(s)
             return s
         gen_out = self.inference_step(generator, [model], sample, None)
-        srcs, hyps, refs = [], [], []
+        ctxs, srcs, hyps, refs = [], [], [], []
         for i in range(len(gen_out)):
             hyps.append(decode(gen_out[i][0]['tokens']))
             refs.append(decode(
                 utils.strip_pad(sample['target'][i], self.target_dictionary.pad()),
                 escape_unk=True,  # don't count <unk> as matches to the hypo
             ))
-            srcs.append(decode(
+            ctxs.append(decode(
                 utils.strip_pad(sample['net_input']['src_tokens'][i], self.source_dictionary.pad()),
                 escape_unk=True,  # don't count <unk> as matches to the hypo
             ))
+            srcs.append(decode(
+                utils.strip_pad(sample['net_input']['prev_output_tokens'][i], self.target_dictionary.pad()),
+                escape_unk=True,  # don't count <unk> as matches to the hypo
+            ))
+        logger.info('example context: ' + ctxs[0])
         logger.info('example source: ' + srcs[0])
         logger.info('example hypothesis: ' + hyps[0])
         logger.info('example reference: ' + refs[0])        

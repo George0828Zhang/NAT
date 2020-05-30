@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-PATH=$HOME/.local/bin:$PATH
+# PATH=$HOME/.local/bin:$PATH
+export CUDA_VISIBLE_DEVICES=3
 TASK=lea_denoise
 DATA=../DATA/data-bin/newscrawl.accented
 
 mkdir -p checkpoints/$TASK
 mkdir -p logdir/$TASK
     
-fairseq-train --task nat_next_sentence_generation --user-dir . \
+fairseq-train --task nat_next_sentence_generation --user-dir ../ \
     --multilang-sampling-alpha 0.1 \
-    --langs de,en,fr,es \
+    --langs fr,es \
     --add-lang-token \
     --sample-break-mode eos \
     --mask 0.35 \

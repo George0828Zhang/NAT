@@ -28,7 +28,7 @@ import torch
 import json
 from argparse import Namespace
 from fairseq.data import encoders
-from fairseq.tasks.denoising.denoising import DenoisingTask
+from fairseq.tasks.denoising import DenoisingTask
 from fairseq import utils
 from fairseq.utils import new_arange
 # from fairseq.tasks.translation_lev import TranslationLevenshteinBLEUTask

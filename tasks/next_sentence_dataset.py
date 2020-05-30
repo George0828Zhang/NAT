@@ -92,21 +92,48 @@ class NextSentenceDataset(DenoisingDataset):
         args: argparse arguments.
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(args, kwargs)
+    # def __init__(self, *args, **kwargs):
+    #     super().__init__(args, kwargs)
+    def __init__(
+        self,
+        dataset,
+        sizes,
+        vocab,
+        mask_idx,
+        mask_whole_words,
+        shuffle,
+        seed,
+        args,
+        eos=None
+    ):
+        super().__init__(
+            dataset,
+            sizes,
+            vocab,
+            mask_idx,
+            mask_whole_words,
+            shuffle,
+            seed,
+            args,
+            eos=eos,
+        )
+
+        self.permute = args.permute
+        self.randomize_mask_ratio = args.randomize_mask_ratio
 
         if args.mask_length != 'subword' and self.replace_length != -1:
             raise (f'if not using subwords, replace_length can only be -1 (same)')
         if self.insert_ratio != 0.0:
             raise (f'insertion not supported')
 
-    def __getitem__(self, index):
+    def __getitem__(self, index):        
+        index = max(index, 1) # 0 -> 1
         with data_utils.numpy_seed(self.seed, self.epoch, index):
             """
             include context for next sentence denoising
             """
-            context = self.dataset[index]
-            token = self.dataset[index+1]
+            context = self.dataset[index-1] 
+            tokens = self.dataset[index]
             assert tokens[-1] == self.eos
             assert context[-1] == self.eos
             source, target = tokens, tokens.clone()
@@ -114,14 +141,14 @@ class NextSentenceDataset(DenoisingDataset):
             if self.permute_sentence_ratio > 0.0:
                 source = self.permute_sentences(source, self.permute_sentence_ratio)
 
-            if self.random_mask_ratio:
-                source = self.add_whole_word_mask(source, np.random.random()) # TODO
+            if self.randomize_mask_ratio:
+                source = self.add_whole_word_mask(source, np.random.random())
             elif self.mask_ratio > 0:
                 source = self.add_whole_word_mask(source, self.mask_ratio)
 
             ## added support for token permutation
             if self.permute > 0:
-                source = self.add_permuted_noise(source, p, self.permute)
+                source = self.add_permuted_noise(source, self.permute)
 
             if self.rotate_ratio > 0.0 and np.random.random() < self.rotate_ratio:
                 source = self.add_rolling_noise(source)
@@ -140,7 +167,7 @@ class NextSentenceDataset(DenoisingDataset):
         }
 
     def __len__(self):
-        return len(self.dataset) - 1
+        return len(self.dataset)
 
     def collater(self, samples):
         """Merge a list of samples to form a mini-batch.
@@ -151,38 +178,38 @@ class NextSentenceDataset(DenoisingDataset):
         """
         return collate(samples, self.vocab.pad(), self.vocab.eos(), self.vocab)
     
-    def num_tokens(self, index):
-        """Return the number of tokens in a sample. This value is used to
-        enforce ``--max-tokens`` during batching.
-        includes context tokens
-        """
-        return max(self.sizes[index], self.sizes[index+1])
+    # def num_tokens(self, index):
+    #     """Return the number of tokens in a sample. This value is used to
+    #     enforce ``--max-tokens`` during batching.
+    #     includes context tokens
+    #     """
+    #     return max(self.sizes[index], self.sizes[index+1])
 
-    def size(self, index):
-        """Return an example's size as a float or tuple. This value is used when
-        filtering a dataset with ``--max-positions``.
-        includes context tokens
-        """
-        return (self.sizes[index], self.sizes[index+1])
+    # def size(self, index):
+    #     """Return an example's size as a float or tuple. This value is used when
+    #     filtering a dataset with ``--max-positions``.
+    #     includes context tokens
+    #     """
+    #     return (self.sizes[index], self.sizes[index+1])
 
-    def ordered_indices(self):
-        """Return an ordered list of indices. Batches will be constructed based
-        on this order."""
-        if self.shuffle:
-            indices = np.random.permutation(len(self))
-        else:
-            indices = np.arange(len(self))
-        return indices[np.argsort(self.sizes[indices], kind='mergesort')]
+    # def ordered_indices(self):
+    #     """Return an ordered list of indices. Batches will be constructed based
+    #     on this order."""
+    #     if self.shuffle:
+    #         indices = np.random.permutation(len(self))
+    #     else:
+    #         indices = np.arange(len(self))
+    #     return indices[np.argsort(self.sizes[indices], kind='mergesort')]
 
-    def prefetch(self, indices):
-        self.src.prefetch(indices)
-        self.tgt.prefetch(indices)
+    # def prefetch(self, indices):
+    #     self.src.prefetch(indices)
+    #     self.tgt.prefetch(indices)
 
-    @property
-    def supports_prefetch(self):
-        return (
-            hasattr(self.src, 'supports_prefetch')
-            and self.src.supports_prefetch
-            and hasattr(self.tgt, 'supports_prefetch')
-            and self.tgt.supports_prefetch
-        )
+    # @property
+    # def supports_prefetch(self):
+    #     return (
+    #         hasattr(self.src, 'supports_prefetch')
+    #         and self.src.supports_prefetch
+    #         and hasattr(self.tgt, 'supports_prefetch')
+    #         and self.tgt.supports_prefetch
+    #     )
