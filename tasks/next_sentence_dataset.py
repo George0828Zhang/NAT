@@ -69,7 +69,8 @@ def collate(
         'nsentences': samples[0]['source'].size(0),
     }
     if prev_output_tokens is not None:
-        batch['net_input']['prev_output_tokens'] = prev_output_tokens
+        # batch['net_input']['prev_output_tokens'] = prev_output_tokens
+        batch['prev_target'] = prev_output_tokens
 
     return batch
 

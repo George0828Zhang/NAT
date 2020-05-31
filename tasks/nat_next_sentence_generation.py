@@ -28,22 +28,45 @@ import json
 from argparse import Namespace
 from fairseq.data import encoders
 from fairseq import utils
-from fairseq.utils import new_arange
-from .nat_multilingual_denoising import NATMultilingualDenoisingTask
+# from fairseq.utils import new_arange
+from fairseq.tasks.multilingual_denoising import MultilingualDenoisingTask
+# from .nat_multilingual_denoising import NATMultilingualDenoisingTask
 from .next_sentence_dataset import NextSentenceDataset
 
 logger = logging.getLogger(__name__)
 
 
 @register_task('nat_next_sentence_generation')
-class NATNextSentenceGenerationTask(NATMultilingualDenoisingTask):
+class NATNextSentenceGenerationTask(MultilingualDenoisingTask):
     @staticmethod
     def add_args(parser):
-        NATMultilingualDenoisingTask.add_args(parser)
+        """
+        parser.add_argument('--multilang-sampling-alpha', type=float, default=1.0,
+                            help='smoothing alpha for sample rations across multiple datasets')
+        parser.add_argument('--add-lang-token', default=False, action='store_true')
+        parser.add_argument('--langs', type=str, help="language ids we are considering", default=None)
+        parser.add_argument('--no-whole-word-mask-langs', type=str, default='', metavar='N',
+                            help='languages without spacing between words dont support whole word masking')
+        """
+        MultilingualDenoisingTask.add_args(parser)
         parser.add_argument(
             '--randomize-mask-ratio', action="store_true",
             help='use random ratio to mask input.'
         )
+
+        # parser.add_argument('--eval-lm', action='store_true',
+        #                     help='evaluation with BLEU scores')
+        parser.add_argument('--eval-lm-remove-bpe', nargs='?', const='@@ ', default=None,
+                            help='remove BPE before computing BLEU')
+        parser.add_argument('--eval-lm-detok', type=str, default="space",
+                            help='detokenizer before computing BLEU (e.g., "moses"); '
+                                 'required if using --eval-lm-print-samples; use "space" to '
+                                 'disable detokenization; see fairseq.data.encoders '
+                                 'for other options')
+        parser.add_argument('--eval-lm-detok-args', type=str, metavar='JSON',
+                            help='args for building the tokenizer, if needed')
+        parser.add_argument('--eval-lm-print-samples', action='store_true',
+                            help='print sample generations during validation')
 
     def load_dataset(self, split, epoch=1, combine=False, **kwargs):
         """Load a given dataset split.
@@ -67,13 +90,13 @@ class NATNextSentenceGenerationTask(NATMultilingualDenoisingTask):
                 assert os.path.exists(os.path.join(data_path, name)), "all the languages must exist"
 
         logger.info("| Training on {0} languages: {1}".format(len(languages), languages))
-        # Changed
         logger.info("| Language to id mapping: %s", {
                 lang: id for id, lang in enumerate(languages)
             }
         )
 
         mask_whole_words = get_whole_word_mask(self.args, self.dictionary)
+        language_without_segmentations = self.args.no_whole_word_mask_langs.split(',')
         lang_datasets = []
         for language in languages:
             split_path = os.path.join(data_path, language, split)
@@ -105,12 +128,13 @@ class NATNextSentenceGenerationTask(NATMultilingualDenoisingTask):
             dataset = PrependTokenDataset(dataset, self.source_dictionary.bos())
             dataset = AppendTokenDataset(dataset, end_token)
 
+            lang_mask_whole_words = mask_whole_words if language not in language_without_segmentations else None
             lang_dataset = NextSentenceDataset(
                 dataset,
                 dataset.sizes,
                 self.dictionary,
                 self.mask_idx,
-                mask_whole_words,
+                lang_mask_whole_words,
                 shuffle=self.args.shuffle_instance,
                 seed=self.seed,
                 args=self.args,
@@ -191,7 +215,6 @@ class NATNextSentenceGenerationTask(NATMultilingualDenoisingTask):
                    update_num,
                    ignore_grad=False):
         model.train()
-        sample['prev_target'] = sample['net_input'].pop('prev_output_tokens')
         loss, sample_size, logging_output = criterion(model, sample)
         if ignore_grad:
             loss *= 0
@@ -201,7 +224,6 @@ class NATNextSentenceGenerationTask(NATMultilingualDenoisingTask):
     def valid_step(self, sample, model, criterion):
         model.eval()
         with torch.no_grad():
-            sample['prev_target'] = sample['net_input'].pop('prev_output_tokens')
             loss, sample_size, logging_output = criterion(model, sample)
 
             if self.args.eval_lm_print_samples:

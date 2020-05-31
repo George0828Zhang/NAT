@@ -3,12 +3,16 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import logging
 import os
+import logging
+import json
+from argparse import Namespace
 
 import numpy as np
+import torch
 
 from fairseq.data import (
+    encoders,
     data_utils,
     Dictionary,
     AppendTokenDataset,
@@ -19,33 +23,35 @@ from fairseq.data import (
     SortDataset,
     TokenBlockDataset,
 )
-# from .denoising import DenoisingTask
-from fairseq.data.encoders.utils import get_whole_word_mask
-from fairseq.tasks import register_task
 
-### patched
-import torch
-import json
-from argparse import Namespace
-from fairseq.data import encoders
-from fairseq.tasks.denoising import DenoisingTask
+from fairseq.data.encoders.utils import get_whole_word_mask
+from fairseq.tasks.translation_lev import TranslationLevenshteinTask
+from fairseq.tasks.multilingual_denoising import MultilingualDenoisingTask
+from fairseq.tasks import register_task
 from fairseq import utils
-from fairseq.utils import new_arange
-# from fairseq.tasks.translation_lev import TranslationLevenshteinBLEUTask
 
 logger = logging.getLogger(__name__)
 
 
 @register_task('nat_multilingual_denoising')
-class NATMultilingualDenoisingTask(DenoisingTask):
+class NATMultilingualDenoisingTask(MultilingualDenoisingTask):
 
     @staticmethod
     def add_args(parser):
-        DenoisingTask.add_args(parser)
+        """
         parser.add_argument('--multilang-sampling-alpha', type=float, default=1.0,
                             help='smoothing alpha for sample rations across multiple datasets')
         parser.add_argument('--add-lang-token', default=False, action='store_true')
         parser.add_argument('--langs', type=str, help="language ids we are considering", default=None)
+        parser.add_argument('--no-whole-word-mask-langs', type=str, default='', metavar='N',
+                            help='languages without spacing between words dont support whole word masking')
+        """
+        MultilingualDenoisingTask.add_args(parser)
+
+        parser.add_argument(
+            '--decoder-input-noise', dest="noise",
+            default='random_mask',
+            choices=['random_mask', 'no_noise', 'full_mask'])
 
         # options for showing sentences during validation        
         # parser.add_argument('--eval-lm', action='store_true',
@@ -62,52 +68,7 @@ class NATMultilingualDenoisingTask(DenoisingTask):
         parser.add_argument('--eval-lm-print-samples', action='store_true',
                             help='print sample generations during validation')
 
-    @classmethod
-    def setup_task(cls, args, **kwargs):
-        """Setup the task.
-        """
-        paths = args.data.split(':')
-        assert len(paths) > 0
-        dictionary = Dictionary.load(os.path.join(paths[0], 'dict.txt'))
-
-        data_path = paths[0]
-        if args.langs is None:
-            languages = sorted([
-                name for name in os.listdir(data_path)
-                if os.path.isdir(os.path.join(data_path, name))
-            ])
-        else:
-            languages = args.langs.split(',')
-
-        if args.add_lang_token:
-            for lang in languages:
-                dictionary.add_symbol('[{}]'.format(lang))
-
-        logger.info("| dictionary: {} types".format(len(dictionary)))
-        if not hasattr(args, 'shuffle_instance'):
-            args.shuffle_instance = False
-        return cls(args, dictionary)
-
-    def __init__(self, args, dictionary):
-        super().__init__(args, dictionary)
-        self.dictionary = dictionary
-        self.seed = args.seed
-
-        # add mask token
-        self.mask_idx = self.dictionary.add_symbol('<mask>')
-        self.langs = args.langs
-        self.args = args
-
-    def _get_sample_prob(self, dataset_lens):
-        """
-        Get smoothed sampling porbability by languages. This helps low resource
-        languages by upsampling them.
-        """
-        prob = dataset_lens / dataset_lens.sum()
-        smoothed_prob = prob ** self.args.multilang_sampling_alpha
-        smoothed_prob = smoothed_prob / smoothed_prob.sum()
-        return smoothed_prob
-
+    ### only changed logging to make sampling probs show in info.
     def load_dataset(self, split, epoch=1, combine=False, **kwargs):
         """Load a given dataset split.
 
@@ -130,13 +91,13 @@ class NATMultilingualDenoisingTask(DenoisingTask):
                 assert os.path.exists(os.path.join(data_path, name)), "all the languages must exist"
 
         logger.info("| Training on {0} languages: {1}".format(len(languages), languages))
-        # Changed
         logger.info("| Language to id mapping: %s", {
                 lang: id for id, lang in enumerate(languages)
             }
         )
 
         mask_whole_words = get_whole_word_mask(self.args, self.dictionary)
+        language_without_segmentations = self.args.no_whole_word_mask_langs.split(',')
         lang_datasets = []
         for language in languages:
             split_path = os.path.join(data_path, language, split)
@@ -168,12 +129,13 @@ class NATMultilingualDenoisingTask(DenoisingTask):
             dataset = PrependTokenDataset(dataset, self.source_dictionary.bos())
             dataset = AppendTokenDataset(dataset, end_token)
 
+            lang_mask_whole_words = mask_whole_words if language not in language_without_segmentations else None
             lang_dataset = DenoisingDataset(
                 dataset,
                 dataset.sizes,
                 self.dictionary,
                 self.mask_idx,
-                mask_whole_words,
+                lang_mask_whole_words,
                 shuffle=self.args.shuffle_instance,
                 seed=self.seed,
                 args=self.args,
@@ -241,6 +203,7 @@ class NATMultilingualDenoisingTask(DenoisingTask):
                 dataset.sizes,
             ],
         )
+
     
 
     #############################################
@@ -278,27 +241,13 @@ class NATMultilingualDenoisingTask(DenoisingTask):
             self.sequence_generator = self.build_generator([model], Namespace(**gen_args))
         return model
 
+    @property
+    def tgt_dict(self):
+        """ tanslation_lev 's inject_noise requires this. """
+        return self.target_dictionary
+
     def inject_noise(self, target_tokens):
-        pad = self.tgt_dict.pad()
-        bos = self.tgt_dict.bos()
-        eos = self.tgt_dict.eos()
-        unk = self.tgt_dict.unk()
-
-        target_masks = target_tokens.ne(pad) & \
-                        target_tokens.ne(bos) & \
-                        target_tokens.ne(eos)
-        target_score = target_tokens.clone().float().uniform_()
-        target_score.masked_fill_(~target_masks, 2.0)
-        target_length = target_masks.sum(1).float()
-        target_length = target_length * target_length.clone().uniform_()
-        target_length = target_length + 1  # make sure to mask at least one token.
-
-        _, target_rank = target_score.sort(1)
-        target_cutoff = new_arange(target_rank) < target_length[:, None].long()
-        prev_target_tokens = target_tokens.masked_fill(
-            target_cutoff.scatter(1, target_rank, target_cutoff), unk)
-        return prev_target_tokens
-
+        return TranslationLevenshteinTask.inject_noise(self, target_tokens)
 
     def train_step(self,
                    sample,
@@ -336,6 +285,7 @@ class NATMultilingualDenoisingTask(DenoisingTask):
             if self.tokenizer:
                 s = self.tokenizer.decode(s)
             return s
+
         gen_out = self.inference_step(generator, [model], sample, None)
         srcs, hyps, refs = [], [], []
         for i in range(len(gen_out)):
