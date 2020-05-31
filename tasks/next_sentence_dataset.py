@@ -142,7 +142,8 @@ class NextSentenceDataset(DenoisingDataset):
                 source = self.permute_sentences(source, self.permute_sentence_ratio)
 
             if self.randomize_mask_ratio:
-                source = self.add_whole_word_mask(source, np.random.random())
+                p = np.random.uniform(low=0.01, high=0.99) #np.random.random()
+                source = self.add_whole_word_mask(source, p) 
             elif self.mask_ratio > 0:
                 source = self.add_whole_word_mask(source, self.mask_ratio)
 
@@ -178,19 +179,21 @@ class NextSentenceDataset(DenoisingDataset):
         """
         return collate(samples, self.vocab.pad(), self.vocab.eos(), self.vocab)
     
-    # def num_tokens(self, index):
-    #     """Return the number of tokens in a sample. This value is used to
-    #     enforce ``--max-tokens`` during batching.
-    #     includes context tokens
-    #     """
-    #     return max(self.sizes[index], self.sizes[index+1])
+    def num_tokens(self, index):
+        """Return the number of tokens in a sample. This value is used to
+        enforce ``--max-tokens`` during batching.
+        includes context tokens
+        """
+        index = max(index, 1)
+        return max(self.sizes[index-1], self.sizes[index])
 
-    # def size(self, index):
-    #     """Return an example's size as a float or tuple. This value is used when
-    #     filtering a dataset with ``--max-positions``.
-    #     includes context tokens
-    #     """
-    #     return (self.sizes[index], self.sizes[index+1])
+    def size(self, index):
+        """Return an example's size as a float or tuple. This value is used when
+        filtering a dataset with ``--max-positions``.
+        includes context tokens
+        """
+        index = max(index, 1)
+        return (self.sizes[index-1], self.sizes[index])
 
     # def ordered_indices(self):
     #     """Return an ordered list of indices. Batches will be constructed based

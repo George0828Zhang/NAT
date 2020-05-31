@@ -191,7 +191,7 @@ class NATNextSentenceGenerationTask(NATMultilingualDenoisingTask):
                    update_num,
                    ignore_grad=False):
         model.train()
-        sample['prev_target'] = sample['net_input']['prev_output_tokens']
+        sample['prev_target'] = sample['net_input'].pop('prev_output_tokens')
         loss, sample_size, logging_output = criterion(model, sample)
         if ignore_grad:
             loss *= 0
@@ -201,7 +201,7 @@ class NATNextSentenceGenerationTask(NATMultilingualDenoisingTask):
     def valid_step(self, sample, model, criterion):
         model.eval()
         with torch.no_grad():
-            sample['prev_target'] = sample['net_input']['prev_output_tokens']
+            sample['prev_target'] = sample['net_input'].pop('prev_output_tokens')
             loss, sample_size, logging_output = criterion(model, sample)
 
             if self.args.eval_lm_print_samples:
@@ -232,7 +232,7 @@ class NATNextSentenceGenerationTask(NATMultilingualDenoisingTask):
                 escape_unk=True,  # don't count <unk> as matches to the hypo
             ))
             srcs.append(decode(
-                utils.strip_pad(sample['net_input']['prev_output_tokens'][i], self.target_dictionary.pad()),
+                utils.strip_pad(sample['prev_target'][i], self.target_dictionary.pad()),
                 escape_unk=True,  # don't count <unk> as matches to the hypo
             ))
         logger.info('example context: ' + ctxs[0])
