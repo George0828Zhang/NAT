@@ -1,14 +1,23 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Adapted from https://github.com/facebookresearch/MIXER/blob/master/prepareData.sh
+PREFIX=${1:='.'}
+ICML17=$2
+WORKERS=4
+TMP=$PREFIX/wmt_en_de
+mkdir -p $TMP
 
+cd $PREFIX
 echo 'Cloning Moses github repository (for tokenization scripts)...'
 git clone https://github.com/moses-smt/mosesdecoder.git
 
-SCRIPTS=mosesdecoder/scripts
+SCRIPTS=$(pwd)/mosesdecoder/scripts
 TOKENIZER=$SCRIPTS/tokenizer/tokenizer.perl
-CLEAN=$SCRIPTS/training/clean-corpus-n.perl
+LC=$SCRIPTS/tokenizer/lowercase.perl
+REPLACE_UNICODE_PUNCT=$SCRIPTS/tokenizer/replace-unicode-punctuation.perl
 NORM_PUNC=$SCRIPTS/tokenizer/normalize-punctuation.perl
 REM_NON_PRINT_CHAR=$SCRIPTS/tokenizer/remove-non-printing-char.perl
+CLEAN=$SCRIPTS/training/clean-corpus-n.perl
+cd $TMP
 
 URLS=(
     "http://statmt.org/wmt13/training-parallel-europarl-v7.tgz"
@@ -32,7 +41,7 @@ CORPORA=(
 
 # This will make the dataset compatible to the one used in "Convolutional Sequence to Sequence Learning"
 # https://arxiv.org/abs/1705.03122
-if [ "$1" == "--icml17" ]; then
+if [ $ICML17 == "--icml17" ]; then
     URLS[2]="http://statmt.org/wmt14/training-parallel-nc-v9.tgz"
     FILES[2]="training-parallel-nc-v9.tgz"
     CORPORA[2]="training/news-commentary-v9.de-en"
@@ -49,15 +58,12 @@ fi
 src=en
 tgt=de
 lang=en-de
-prep=$OUTDIR
-tmp=$prep/tmp
-orig=orig
-dev=dev/newstest2013
-
-mkdir -p $orig $tmp $prep
+tmp=$TMP/tmp
+prep=$TMP/prep
+orig=$TMP/orig
+mkdir -p $tmp $orig $prep
 
 cd $orig
-
 for ((i=0;i<${#URLS[@]};++i)); do
     file=${FILES[i]}
     if [ -f $file ]; then
@@ -78,21 +84,55 @@ for ((i=0;i<${#URLS[@]};++i)); do
         fi
     fi
 done
-cd ..
+
+cd $TMP
 
 echo "pre-processing train data..."
 for l in $src $tgt; do
-    rm $tmp/train.tags.$lang.tok.$l
-    for f in "${CORPORA[@]}"; do
-        cat $orig/$f.$l | \
-            perl $NORM_PUNC $l | \
-            perl $REM_NON_PRINT_CHAR | \
-            perl $TOKENIZER -threads 8 -a -l $l >> $tmp/train.tags.$lang.tok.$l
-    done
+    tok=$prep/train.$l
+    if [ -f $tok ]; then
+        echo "found $tok, skipping tokenization."        
+    else
+        for f in "${CORPORA[@]}"; do
+            # cat $orig/$f.$l | \
+            #     perl $NORM_PUNC $l | \
+            #     perl $REM_NON_PRINT_CHAR | \
+            #     perl $TOKENIZER -threads 8 -a -l $l >> $tmp/train.tags.$lang.tok.$l 
+            # # -a : aggressive hyphen splitting
+            cat $orig/$f.$l | \
+            $REPLACE_UNICODE_PUNCT | \
+                $NORM_PUNC -l $l | \
+                $REM_NON_PRINT_CHAR | \
+                $TOKENIZER -l $l -no-escape -a -threads $WORKERS | \
+                $LC >> $tok
+        done
+    fi
+done
+
+echo "pre-processing valid data..."
+for l in $src $tgt; do
+    tok=$prep/valid.$l
+    if [ "$l" == "$src" ]; then
+        t="src"
+    else
+        t="ref"
+    fi
+    grep '<seg id' $orig/dev/newstest2013-$t.$l.sgm | \
+        sed -e 's/<seg id="[0-9]*">\s*//g' | \
+        sed -e 's/\s*<\/seg>\s*//g' | \
+        sed -e "s/\’/\'/g" | \
+        $REPLACE_UNICODE_PUNCT | \
+            $NORM_PUNC -l $l | \
+            $REM_NON_PRINT_CHAR | \
+            $TOKENIZER -l $l -no-escape -a -threads $WORKERS | \
+            $LC > $tok
+    # perl $TOKENIZER -threads 8 -a -l $l > $tmp/test.$l
+    echo ""
 done
 
 echo "pre-processing test data..."
 for l in $src $tgt; do
+    tok=$prep/test.$l
     if [ "$l" == "$src" ]; then
         t="src"
     else
@@ -102,16 +142,23 @@ for l in $src $tgt; do
         sed -e 's/<seg id="[0-9]*">\s*//g' | \
         sed -e 's/\s*<\/seg>\s*//g' | \
         sed -e "s/\’/\'/g" | \
-    perl $TOKENIZER -threads 8 -a -l $l > $tmp/test.$l
+        $REPLACE_UNICODE_PUNCT | \
+            $NORM_PUNC -l $l | \
+            $REM_NON_PRINT_CHAR | \
+            $TOKENIZER -l $l -no-escape -a -threads $WORKERS | \
+            $LC > $tok
+    # perl $TOKENIZER -threads 8 -a -l $l > $tmp/test.$l
     echo ""
 done
 
-echo "splitting train and valid..."
-for l in $src $tgt; do
-    awk '{if (NR%100 == 0)  print $0; }' $tmp/train.tags.$lang.tok.$l > $tmp/valid.$l
-    awk '{if (NR%100 != 0)  print $0; }' $tmp/train.tags.$lang.tok.$l > $tmp/train.$l
+for split in train valid; do
+    if [ -f $tmp/$split.$src ] && [ -f $tmp/$split.$tgt ]; then
+        echo "cleaned data found: $tmp/$split.$src & $tgt, skipping clean_corpus_n"    
+    else
+        perl $CLEAN -ratio 1.5 $prep/$split $src $tgt $tmp/$split 1 250
+    fi
 done
 
-
-# perl $CLEAN -ratio 1.5 $tmp/bpe.train $src $tgt $prep/train 1 250
-# perl $CLEAN -ratio 1.5 $tmp/bpe.valid $src $tgt $prep/valid 1 250
+for L in $src $tgt; do
+    cp $prep/test.$L $tmp/test.$L
+done
