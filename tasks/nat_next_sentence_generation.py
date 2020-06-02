@@ -19,7 +19,6 @@ from fairseq.data import (
     SortDataset,
     TokenBlockDataset,
 )
-# from .denoising import DenoisingTask
 from fairseq.data.encoders.utils import get_whole_word_mask
 from fairseq.tasks import register_task
 
@@ -28,25 +27,33 @@ import torch
 import json
 from argparse import Namespace
 from fairseq.data import encoders
-from fairseq.tasks.denoising import DenoisingTask
 from fairseq import utils
-
+# from fairseq.utils import new_arange
+from fairseq.tasks.multilingual_denoising import MultilingualDenoisingTask
+# from .nat_multilingual_denoising import NATMultilingualDenoisingTask
+from .next_sentence_dataset import NextSentenceDataset
 
 logger = logging.getLogger(__name__)
 
 
-@register_task('nat_multilingual_denoising')
-class NATMultilingualDenoisingTask(DenoisingTask):
-
+@register_task('nat_next_sentence_generation')
+class NATNextSentenceGenerationTask(MultilingualDenoisingTask):
     @staticmethod
     def add_args(parser):
-        DenoisingTask.add_args(parser)
+        """
         parser.add_argument('--multilang-sampling-alpha', type=float, default=1.0,
                             help='smoothing alpha for sample rations across multiple datasets')
         parser.add_argument('--add-lang-token', default=False, action='store_true')
         parser.add_argument('--langs', type=str, help="language ids we are considering", default=None)
+        parser.add_argument('--no-whole-word-mask-langs', type=str, default='', metavar='N',
+                            help='languages without spacing between words dont support whole word masking')
+        """
+        MultilingualDenoisingTask.add_args(parser)
+        parser.add_argument(
+            '--randomize-mask-ratio', action="store_true",
+            help='use random ratio to mask input.'
+        )
 
-        # options for showing sentences during validation        
         # parser.add_argument('--eval-lm', action='store_true',
         #                     help='evaluation with BLEU scores')
         parser.add_argument('--eval-lm-remove-bpe', nargs='?', const='@@ ', default=None,
@@ -60,52 +67,6 @@ class NATMultilingualDenoisingTask(DenoisingTask):
                             help='args for building the tokenizer, if needed')
         parser.add_argument('--eval-lm-print-samples', action='store_true',
                             help='print sample generations during validation')
-
-    @classmethod
-    def setup_task(cls, args, **kwargs):
-        """Setup the task.
-        """
-        paths = args.data.split(':')
-        assert len(paths) > 0
-        dictionary = Dictionary.load(os.path.join(paths[0], 'dict.txt'))
-
-        data_path = paths[0]
-        if args.langs is None:
-            languages = sorted([
-                name for name in os.listdir(data_path)
-                if os.path.isdir(os.path.join(data_path, name))
-            ])
-        else:
-            languages = args.langs.split(',')
-
-        if args.add_lang_token:
-            for lang in languages:
-                dictionary.add_symbol('[{}]'.format(lang))
-
-        logger.info("| dictionary: {} types".format(len(dictionary)))
-        if not hasattr(args, 'shuffle_instance'):
-            args.shuffle_instance = False
-        return cls(args, dictionary)
-
-    def __init__(self, args, dictionary):
-        super().__init__(args, dictionary)
-        self.dictionary = dictionary
-        self.seed = args.seed
-
-        # add mask token
-        self.mask_idx = self.dictionary.add_symbol('<mask>')
-        self.langs = args.langs
-        self.args = args
-
-    def _get_sample_prob(self, dataset_lens):
-        """
-        Get smoothed sampling porbability by languages. This helps low resource
-        languages by upsampling them.
-        """
-        prob = dataset_lens / dataset_lens.sum()
-        smoothed_prob = prob ** self.args.multilang_sampling_alpha
-        smoothed_prob = smoothed_prob / smoothed_prob.sum()
-        return smoothed_prob
 
     def load_dataset(self, split, epoch=1, combine=False, **kwargs):
         """Load a given dataset split.
@@ -129,13 +90,13 @@ class NATMultilingualDenoisingTask(DenoisingTask):
                 assert os.path.exists(os.path.join(data_path, name)), "all the languages must exist"
 
         logger.info("| Training on {0} languages: {1}".format(len(languages), languages))
-        # Changed
         logger.info("| Language to id mapping: %s", {
                 lang: id for id, lang in enumerate(languages)
             }
         )
 
         mask_whole_words = get_whole_word_mask(self.args, self.dictionary)
+        language_without_segmentations = self.args.no_whole_word_mask_langs.split(',')
         lang_datasets = []
         for language in languages:
             split_path = os.path.join(data_path, language, split)
@@ -167,12 +128,13 @@ class NATMultilingualDenoisingTask(DenoisingTask):
             dataset = PrependTokenDataset(dataset, self.source_dictionary.bos())
             dataset = AppendTokenDataset(dataset, end_token)
 
-            lang_dataset = DenoisingDataset(
+            lang_mask_whole_words = mask_whole_words if language not in language_without_segmentations else None
+            lang_dataset = NextSentenceDataset(
                 dataset,
                 dataset.sizes,
                 self.dictionary,
                 self.mask_idx,
-                mask_whole_words,
+                lang_mask_whole_words,
                 shuffle=self.args.shuffle_instance,
                 seed=self.seed,
                 args=self.args,
@@ -245,39 +207,6 @@ class NATMultilingualDenoisingTask(DenoisingTask):
     #############################################
     # patched to support nat model and printing #
     #############################################
-    def build_generator(self, models, args):
-        # add models input to match the API for SequenceGenerator
-        from fairseq.iterative_refinement_generator import IterativeRefinementGenerator
-        return IterativeRefinementGenerator(
-            self.target_dictionary,
-            eos_penalty=getattr(args, 'iter_decode_eos_penalty', 0.0),
-            max_iter=getattr(args, 'iter_decode_max_iter', 10),
-            beam_size=getattr(args, 'iter_decode_with_beam', 1),
-            reranking=getattr(args, 'iter_decode_with_external_reranker', False),
-            decoding_format=getattr(args, 'decoding_format', None),
-            adaptive=not getattr(args, 'iter_decode_force_max_iter', False),
-            retain_history=getattr(args, 'retain_iter_history', False))
-
-
-    def build_model(self, args):
-        model = super().build_model(args)
-        if getattr(args, 'eval_lm_print_samples', False):
-            assert getattr(args, 'eval_lm_detok', None) is not None, (
-                '--eval-lm-detok is required if using --eval-lm-print-samples; '
-                'try --eval-lm-detok=moses (or --eval-lm-detok=space '
-                'to disable detokenization, e.g., when using sentencepiece)'
-            )
-            detok_args = json.loads(getattr(args, 'eval_lm_detok_args', '{}') or '{}')
-            self.tokenizer = encoders.build_tokenizer(Namespace(
-                tokenizer=getattr(args, 'eval_lm_detok', None),
-                **detok_args
-            ))
-
-            gen_args = json.loads(getattr(args, 'eval_lm_args', '{}') or '{}')
-            self.sequence_generator = self.build_generator([model], Namespace(**gen_args))
-        return model
-
-
     def train_step(self,
                    sample,
                    model,
@@ -286,7 +215,6 @@ class NATMultilingualDenoisingTask(DenoisingTask):
                    update_num,
                    ignore_grad=False):
         model.train()
-        sample['prev_target'] = sample['target']
         loss, sample_size, logging_output = criterion(model, sample)
         if ignore_grad:
             loss *= 0
@@ -296,7 +224,6 @@ class NATMultilingualDenoisingTask(DenoisingTask):
     def valid_step(self, sample, model, criterion):
         model.eval()
         with torch.no_grad():
-            sample['prev_target'] = sample['target']
             loss, sample_size, logging_output = criterion(model, sample)
 
             if self.args.eval_lm_print_samples:
@@ -315,17 +242,22 @@ class NATMultilingualDenoisingTask(DenoisingTask):
                 s = self.tokenizer.decode(s)
             return s
         gen_out = self.inference_step(generator, [model], sample, None)
-        srcs, hyps, refs = [], [], []
+        ctxs, srcs, hyps, refs = [], [], [], []
         for i in range(len(gen_out)):
             hyps.append(decode(gen_out[i][0]['tokens']))
             refs.append(decode(
                 utils.strip_pad(sample['target'][i], self.target_dictionary.pad()),
                 escape_unk=True,  # don't count <unk> as matches to the hypo
             ))
-            srcs.append(decode(
+            ctxs.append(decode(
                 utils.strip_pad(sample['net_input']['src_tokens'][i], self.source_dictionary.pad()),
                 escape_unk=True,  # don't count <unk> as matches to the hypo
             ))
+            srcs.append(decode(
+                utils.strip_pad(sample['prev_target'][i], self.target_dictionary.pad()),
+                escape_unk=True,  # don't count <unk> as matches to the hypo
+            ))
+        logger.info('example context: ' + ctxs[0])
         logger.info('example source: ' + srcs[0])
         logger.info('example hypothesis: ' + hyps[0])
         logger.info('example reference: ' + refs[0])        

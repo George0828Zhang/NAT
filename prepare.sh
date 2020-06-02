@@ -10,6 +10,6 @@ else
     git clone https://github.com/pytorch/fairseq
 fi
 cd fairseq
-python $WANDB fairseq_cli/train.py
+# python $WANDB fairseq_cli/train.py
 pip install --user --upgrade . 
 
