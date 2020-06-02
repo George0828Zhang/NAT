@@ -4,9 +4,9 @@
 DATASET=$1  # {'wmt14', 'wmt17', 'iwslt14', 'iwslt14.en-es', 'europarl'}
 WORKERS=4
 OUTDIR=$DATASET # if not set, use default value of dataset's name
-PREFIX=/hdd/nat-data # put . to use pwd
+PREFIX=/home/george/NAT/DATA/raw_data # put . to use pwd
 
-BPE_CODE=Current
+BPE_CODE=/home/george/NAT/DATA/data-bin/code
 # 'None', don't apply bpe
 # 'Current', learn on current dataset
 # other, use other as code
@@ -14,7 +14,7 @@ BPE_CODE=Current
 BPE_TOKENS=80000 # only used when learning BPE
 
 # dictionary for binirize the data
-DICT=None # if DICT='None', learning dict on current dataset
+DICT=/home/george/NAT/DATA/data-bin/dict.txt # if DICT='None', learning dict on current dataset
 
 echo 'Cloning Subword NMT repository (for BPE pre-processing)...'
 git clone https://github.com/rsennrich/subword-nmt.git
@@ -35,7 +35,8 @@ elif [ $DATASET = 'wmt14' ]; then
     OUTDIR=${OUTDIR:='wmt14_en_de'}
 
     DATADIR='wmt14_en_de'
-    DATASCRIPT='scripts/get_wmt17.sh --icml17'
+    DATASCRIPT='scripts/get_wmt17.sh'
+    EXTRAOPTIONS='--icml17'
     src=de
     tgt=en
     langs='de en'
@@ -106,7 +107,7 @@ done
 if [ $exist = 0 ]; then
 
     echo "download and tokenize $DATASET at $DATADIR"
-    bash $DATASCRIPT $PREFIX
+    bash $DATASCRIPT $PREFIX $EXTRAOPTIONS
 
 fi
 
