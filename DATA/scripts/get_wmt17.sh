@@ -3,8 +3,6 @@
 PREFIX=${1:='.'}
 ICML17=$2
 WORKERS=4
-TMP=$PREFIX/wmt_14_en_de
-mkdir -p $TMP
 
 cd $PREFIX
 echo 'Cloning Moses github repository (for tokenization scripts)...'
@@ -17,7 +15,6 @@ REPLACE_UNICODE_PUNCT=$SCRIPTS/tokenizer/replace-unicode-punctuation.perl
 NORM_PUNC=$SCRIPTS/tokenizer/normalize-punctuation.perl
 REM_NON_PRINT_CHAR=$SCRIPTS/tokenizer/remove-non-printing-char.perl
 CLEAN=$SCRIPTS/training/clean-corpus-n.perl
-cd $TMP
 
 URLS=(
     "http://statmt.org/wmt13/training-parallel-europarl-v7.tgz"
@@ -55,6 +52,10 @@ if [ ! -d "$SCRIPTS" ]; then
     exit
 fi
 
+TMP=$PREFIX/$OUTDIR
+mkdir -p $TMP
+cd $TMP
+
 src=en
 tgt=de
 lang=en-de
@@ -77,12 +78,11 @@ for ((i=0;i<${#URLS[@]};++i)); do
             echo "$url not successfully downloaded."
             exit -1
         fi
-    fi
-    
-    if [ ${file: -4} == ".tgz" ]; then
-        tar zxvf $file
-    elif [ ${file: -4} == ".tar" ]; then
-        tar xvf $file
+        if [ ${file: -4} == ".tgz" ]; then
+            tar zxvf $file
+        elif [ ${file: -4} == ".tar" ]; then
+            tar xvf $file
+        fi
     fi
 done
 
