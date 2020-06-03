@@ -53,6 +53,11 @@ class NATNextSentenceGenerationTask(MultilingualDenoisingTask):
             '--randomize-mask-ratio', action="store_true",
             help='use random ratio to mask input.'
         )
+        # TODO
+        # parser.add_argument(
+        #     '--prefix-as-context', action="store_true",
+        #     help='to predict target, use sentence prefix as context instead of previous sentence.'
+        # )
 
         # parser.add_argument('--eval-lm', action='store_true',
         #                     help='evaluation with BLEU scores')
@@ -207,19 +212,51 @@ class NATNextSentenceGenerationTask(MultilingualDenoisingTask):
     #############################################
     # patched to support nat model and printing #
     #############################################
-    def train_step(self,
-                   sample,
-                   model,
-                   criterion,
-                   optimizer,
-                   update_num,
-                   ignore_grad=False):
-        model.train()
-        loss, sample_size, logging_output = criterion(model, sample)
-        if ignore_grad:
-            loss *= 0
-        optimizer.backward(loss)
-        return loss, sample_size, logging_output
+    def build_generator(self, models, args):
+        # add models input to match the API for SequenceGenerator
+        from fairseq.iterative_refinement_generator import IterativeRefinementGenerator
+        return IterativeRefinementGenerator(
+            self.target_dictionary,
+            eos_penalty=getattr(args, 'iter_decode_eos_penalty', 0.0),
+            max_iter=getattr(args, 'iter_decode_max_iter', 10),
+            beam_size=getattr(args, 'iter_decode_with_beam', 1),
+            reranking=getattr(args, 'iter_decode_with_external_reranker', False),
+            decoding_format=getattr(args, 'decoding_format', None),
+            adaptive=not getattr(args, 'iter_decode_force_max_iter', False),
+            retain_history=getattr(args, 'retain_iter_history', False))
+
+
+    def build_model(self, args):
+        model = super().build_model(args)
+        if getattr(args, 'eval_lm_print_samples', False):
+            assert getattr(args, 'eval_lm_detok', None) is not None, (
+                '--eval-lm-detok is required if using --eval-lm-print-samples; '
+                'try --eval-lm-detok=moses (or --eval-lm-detok=space '
+                'to disable detokenization, e.g., when using sentencepiece)'
+            )
+            detok_args = json.loads(getattr(args, 'eval_lm_detok_args', '{}') or '{}')
+            self.tokenizer = encoders.build_tokenizer(Namespace(
+                tokenizer=getattr(args, 'eval_lm_detok', None),
+                **detok_args
+            ))
+
+            gen_args = json.loads(getattr(args, 'eval_lm_args', '{}') or '{}')
+            self.sequence_generator = self.build_generator([model], Namespace(**gen_args))
+        return model
+
+    # def train_step(self,
+    #                sample,
+    #                model,
+    #                criterion,
+    #                optimizer,
+    #                update_num,
+    #                ignore_grad=False):
+    #     model.train()
+    #     loss, sample_size, logging_output = criterion(model, sample)
+    #     if ignore_grad:
+    #         loss *= 0
+    #     optimizer.backward(loss)
+    #     return loss, sample_size, logging_output
 
     def valid_step(self, sample, model, criterion):
         model.eval()
@@ -243,7 +280,7 @@ class NATNextSentenceGenerationTask(MultilingualDenoisingTask):
             return s
         gen_out = self.inference_step(generator, [model], sample, None)
         ctxs, srcs, hyps, refs = [], [], [], []
-        for i in range(len(gen_out)):
+        for i in range(1):#len(gen_out)):
             hyps.append(decode(gen_out[i][0]['tokens']))
             refs.append(decode(
                 utils.strip_pad(sample['target'][i], self.target_dictionary.pad()),

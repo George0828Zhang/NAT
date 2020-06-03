@@ -33,6 +33,7 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
             choices=['random_delete', 'random_mask', 'no_noise', 'full_mask'])
         parser.add_argument('--add-mask-token', action='store_true',
                             help='add a mask token for model compatibility.')
+        parser.add_argument('--use-mask-token', default=False, action='store_true')
         parser.add_argument('--add-lang-token', default=False, action='store_true')
         parser.add_argument('--use-lang-token', default=False, action='store_true')
         parser.add_argument('--langs', default=None, metavar='LANG',
@@ -45,6 +46,9 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
         if args.add_mask_token:
             for d in [src_dict, tgt_dict]:
                 d.add_symbol('<mask>')
+            self.mask_id = tgt_dict.index('<mask>')
+        elif args.use_mask_token:
+            raise (f'please enable add-mask-token for use-mask-token to work.')
         if args.add_lang_token:
             if args.langs is None:
                 raise (f'please provide langs for add-lang-token or use-lang-token.')
@@ -82,7 +86,8 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
             append_source_id=self.args.use_lang_token,
         )
 
-    def inject_noise(self, target_tokens):
+    def inject_noise(self, target_tokens, mask_id=None):        
+        unk = mask_id if mask_id is not None else self.tgt_dict.unk()
         def _random_delete(target_tokens):
             pad = self.tgt_dict.pad()
             bos = self.tgt_dict.bos()
@@ -117,7 +122,6 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
             pad = self.tgt_dict.pad()
             bos = self.tgt_dict.bos()
             eos = self.tgt_dict.eos()
-            unk = self.tgt_dict.unk()
 
             target_masks = target_tokens.ne(pad) & \
                            target_tokens.ne(bos) & \
@@ -138,7 +142,6 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
             pad = self.tgt_dict.pad()
             bos = self.tgt_dict.bos()
             eos = self.tgt_dict.eos()
-            unk = self.tgt_dict.unk()
 
             target_mask = target_tokens.eq(bos) | target_tokens.eq(
                 eos) | target_tokens.eq(pad)
@@ -192,7 +195,8 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
                    update_num,
                    ignore_grad=False):
         model.train()
-        sample['prev_target'] = self.inject_noise(sample['target'])
+        mask_id = self.target_dictionary.index('<mask>') if self.args.use_mask_token else None # None uses <unk> as mask
+        sample['prev_target'] = self.inject_noise(sample['target'], mask_id=mask_id)
         loss, sample_size, logging_output = criterion(model, sample)
         if ignore_grad:
             loss *= 0
@@ -209,7 +213,8 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
     def valid_step(self, sample, model, criterion):
         model.eval()
         with torch.no_grad():
-            sample['prev_target'] = self.inject_noise(sample['target'])
+            mask_id = self.target_dictionary.index('<mask>') if self.args.use_mask_token else None # None uses <unk> as mask
+            sample['prev_target'] = self.inject_noise(sample['target'], mask_id=mask_id)
             loss, sample_size, logging_output = criterion(model, sample)
 
             if self.args.eval_bleu:

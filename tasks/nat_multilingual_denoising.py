@@ -25,7 +25,8 @@ from fairseq.data import (
 )
 
 from fairseq.data.encoders.utils import get_whole_word_mask
-from fairseq.tasks.translation_lev import TranslationLevenshteinTask
+# from fairseq.tasks.translation_lev import TranslationLevenshteinTask
+from .translation_lev_bleu.TranslationLevenshteinBLEUTask import inject_noise
 from fairseq.tasks.multilingual_denoising import MultilingualDenoisingTask
 from fairseq.tasks import register_task
 from fairseq import utils
@@ -246,8 +247,11 @@ class NATMultilingualDenoisingTask(MultilingualDenoisingTask):
         """ tanslation_lev 's inject_noise requires this. """
         return self.target_dictionary
 
-    def inject_noise(self, target_tokens):
-        return TranslationLevenshteinTask.inject_noise(self, target_tokens)
+    def nat_sample(self, sample):
+        if 'prev_output_tokens' in sample['net_input']:
+            del sample['net_input']['prev_output_tokens'] # reduce vram usage
+        sample['prev_target'] = inject_noise(self, sample['target'], mask_id=self.mask_idx)
+        return sample
 
     def train_step(self,
                    sample,
@@ -257,7 +261,7 @@ class NATMultilingualDenoisingTask(MultilingualDenoisingTask):
                    update_num,
                    ignore_grad=False):
         model.train()
-        sample['prev_target'] = self.inject_noise(sample['target'])
+        sample = self.nat_sample(sample)
         loss, sample_size, logging_output = criterion(model, sample)
         if ignore_grad:
             loss *= 0
@@ -267,7 +271,7 @@ class NATMultilingualDenoisingTask(MultilingualDenoisingTask):
     def valid_step(self, sample, model, criterion):
         model.eval()
         with torch.no_grad():
-            sample['prev_target'] = self.inject_noise(sample['target'])
+            sample = self.nat_sample(sample)
             loss, sample_size, logging_output = criterion(model, sample)
 
             if self.args.eval_lm_print_samples:
@@ -288,7 +292,7 @@ class NATMultilingualDenoisingTask(MultilingualDenoisingTask):
 
         gen_out = self.inference_step(generator, [model], sample, None)
         srcs, hyps, refs = [], [], []
-        for i in range(len(gen_out)):
+        for i in range(1):#len(gen_out)):
             hyps.append(decode(gen_out[i][0]['tokens']))
             refs.append(decode(
                 utils.strip_pad(sample['target'][i], self.target_dictionary.pad()),
