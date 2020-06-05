@@ -26,7 +26,7 @@ from fairseq.data import (
 
 from fairseq.data.encoders.utils import get_whole_word_mask
 # from fairseq.tasks.translation_lev import TranslationLevenshteinTask
-from .translation_lev_bleu.TranslationLevenshteinBLEUTask import inject_noise
+from .translation_lev_bleu import TranslationLevenshteinBLEUTask
 from fairseq.tasks.multilingual_denoising import MultilingualDenoisingTask
 from fairseq.tasks import register_task
 from fairseq import utils
@@ -250,7 +250,7 @@ class NATMultilingualDenoisingTask(MultilingualDenoisingTask):
     def nat_sample(self, sample):
         if 'prev_output_tokens' in sample['net_input']:
             del sample['net_input']['prev_output_tokens'] # reduce vram usage
-        sample['prev_target'] = inject_noise(self, sample['target'], mask_id=self.mask_idx)
+        sample['prev_target'] = TranslationLevenshteinBLEUTask.inject_noise(self, sample['target'], mask_id=self.mask_idx)
         return sample
 
     def train_step(self,

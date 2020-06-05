@@ -6,6 +6,7 @@
 import numpy as np
 import torch
 import math
+import pdb
 
 from fairseq.data import data_utils, FairseqDataset, DenoisingDataset
 
@@ -107,6 +108,32 @@ class NextSentenceDataset(DenoisingDataset):
         args,
         eos=None
     ):
+        self.permute = args.permute
+        self.randomize_mask_ratio = args.randomize_mask_ratio
+        
+        if args.context_type == "sentence":
+            self.context_fragment = False
+        elif args.context_type == "fragment":
+            self.context_fragment = True
+        else:
+            raise NotImplementedError(f"context type {args.context_type} not implemented.")
+
+        if args.mask_length != 'subword' and args.replace_length != -1:
+            raise (f'if not using subwords, replace_length can only be -1 (same)')
+        if args.insert != 0.0:
+            raise (f'insertion not supported')
+
+        if self.context_fragment:
+            self.context_cutoff = np.clip(
+                (np.random.uniform(0.4,0.6,sizes.size) * sizes).astype(int),
+                1,          # min
+                sizes - 1   # max
+            )
+            self.context_coinflip = np.random.randint(0,2,sizes.size)*2-1
+        else:
+            self.context_coinflip = np.random.randint(0,2,sizes.size)*2-1
+            self.context_coinflip[0] = 1
+
         super().__init__(
             dataset,
             sizes,
@@ -119,22 +146,28 @@ class NextSentenceDataset(DenoisingDataset):
             eos=eos,
         )
 
-        self.permute = args.permute
-        self.randomize_mask_ratio = args.randomize_mask_ratio
-
-        if args.mask_length != 'subword' and self.replace_length != -1:
-            raise (f'if not using subwords, replace_length can only be -1 (same)')
-        if self.insert_ratio != 0.0:
-            raise (f'insertion not supported')
-
-    def __getitem__(self, index):        
-        index = max(index, 1) # 0 -> 1
+    def __getitem__(self, index):
         with data_utils.numpy_seed(self.seed, self.epoch, index):
             """
             include context for next sentence denoising
-            """
-            context = self.dataset[index-1] 
-            tokens = self.dataset[index]
+            """            
+            if self.context_fragment:
+                cutoff = self.context_cutoff[index]
+                tokens = self.dataset[index][:cutoff]
+                context = self.dataset[index][cutoff:]
+
+                tokens = torch.cat([tokens, tokens.new([self.eos])])
+                context = torch.cat([tokens.new([self.vocab.bos()]), context])
+
+                if self.context_coinflip[index] > 0: # if positive, prefix as context.
+                    tmp = tokens
+                    tokens = context
+                    context = tmp
+            else:
+                tokens = self.dataset[index]
+                offset = self.context_coinflip[index]
+                context = self.dataset[index+offset]
+
             assert tokens[-1] == self.eos
             assert context[-1] == self.eos
             source, target = tokens, tokens.clone()
@@ -185,16 +218,26 @@ class NextSentenceDataset(DenoisingDataset):
         enforce ``--max-tokens`` during batching.
         includes context tokens
         """
-        index = max(index, 1)
-        return max(self.sizes[index-1], self.sizes[index])
+        if self.context_fragment:
+            cutoff = self.context_cutoff[index]
+            return max(cutoff, self.sizes[index] - cutoff)
+        else:
+            offset = self.context_coinflip[index]
+            return max(self.sizes[index], self.sizes[index+offset])
 
     def size(self, index):
         """Return an example's size as a float or tuple. This value is used when
         filtering a dataset with ``--max-positions``.
         includes context tokens
         """
-        index = max(index, 1)
-        return (self.sizes[index-1], self.sizes[index])
+        if self.context_fragment:
+            flip = self.context_coinflip[index]
+            cutoff = self.context_cutoff[index]
+            return (cutoff, self.sizes[index] - cutoff) if flip > 0 else (self.sizes[index] - cutoff, cutoff)
+            # if positive, prefix as context.
+        else:
+            offset = self.context_coinflip[index]
+            return (self.sizes[index+offset], self.sizes[index])
 
     # def ordered_indices(self):
     #     """Return an ordered list of indices. Batches will be constructed based

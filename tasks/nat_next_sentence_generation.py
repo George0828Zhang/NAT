@@ -54,10 +54,11 @@ class NATNextSentenceGenerationTask(MultilingualDenoisingTask):
             help='use random ratio to mask input.'
         )
         # TODO
-        # parser.add_argument(
-        #     '--prefix-as-context', action="store_true",
-        #     help='to predict target, use sentence prefix as context instead of previous sentence.'
-        # )
+        parser.add_argument(
+            '--context-type', default="sentence",
+            choices=['sentence', 'fragment'],
+            help='to predict target, use neighboring sentences or sentence fragments(prefix/suffix) as context.'
+        )
 
         # parser.add_argument('--eval-lm', action='store_true',
         #                     help='evaluation with BLEU scores')
