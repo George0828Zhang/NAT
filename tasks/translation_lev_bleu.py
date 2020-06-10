@@ -195,6 +195,7 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
                    update_num,
                    ignore_grad=False):
         model.train()
+        model.set_num_updates(update_num)
         mask_id = self.target_dictionary.index('<mask>') if self.args.use_mask_token else None # None uses <unk> as mask
         sample['prev_target'] = self.inject_noise(sample['target'], mask_id=mask_id)
         loss, sample_size, logging_output = criterion(model, sample)

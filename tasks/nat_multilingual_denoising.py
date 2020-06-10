@@ -260,7 +260,8 @@ class NATMultilingualDenoisingTask(MultilingualDenoisingTask):
                    optimizer,
                    update_num,
                    ignore_grad=False):
-        model.train()
+        model.train()        
+        model.set_num_updates(update_num)
         sample = self.nat_sample(sample)
         loss, sample_size, logging_output = criterion(model, sample)
         if ignore_grad:

@@ -245,19 +245,20 @@ class NATNextSentenceGenerationTask(MultilingualDenoisingTask):
             self.sequence_generator = self.build_generator([model], Namespace(**gen_args))
         return model
 
-    # def train_step(self,
-    #                sample,
-    #                model,
-    #                criterion,
-    #                optimizer,
-    #                update_num,
-    #                ignore_grad=False):
-    #     model.train()
-    #     loss, sample_size, logging_output = criterion(model, sample)
-    #     if ignore_grad:
-    #         loss *= 0
-    #     optimizer.backward(loss)
-    #     return loss, sample_size, logging_output
+    def train_step(self,
+                   sample,
+                   model,
+                   criterion,
+                   optimizer,
+                   update_num,
+                   ignore_grad=False):
+        model.train()        
+        model.set_num_updates(update_num)
+        loss, sample_size, logging_output = criterion(model, sample)
+        if ignore_grad:
+            loss *= 0
+        optimizer.backward(loss)
+        return loss, sample_size, logging_output
 
     def valid_step(self, sample, model, criterion):
         model.eval()

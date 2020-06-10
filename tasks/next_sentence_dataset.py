@@ -123,16 +123,16 @@ class NextSentenceDataset(DenoisingDataset):
         if args.insert != 0.0:
             raise (f'insertion not supported')
 
-        if self.context_fragment:
-            self.context_cutoff = np.clip(
-                (np.random.uniform(0.4,0.6,sizes.size) * sizes).astype(int),
-                1,          # min
-                sizes - 1   # max
-            )
-            self.context_coinflip = np.random.randint(0,2,sizes.size)*2-1
-        else:
-            self.context_coinflip = np.random.randint(0,2,sizes.size)*2-1
-            self.context_coinflip[0] = 1
+        # if self.context_fragment:
+        #     self.context_cutoff = np.clip(
+        #         (np.random.uniform(0.4,0.6,sizes.size) * sizes).astype(int),
+        #         1,          # min
+        #         sizes - 1   # max
+        #     )
+        #     self.context_coinflip = np.random.randint(0,2,sizes.size)*2-1
+        # else:
+        #     self.context_coinflip = np.random.randint(0,2,sizes.size)*2-1
+        #     self.context_coinflip[0] = 1
 
         super().__init__(
             dataset,
@@ -152,21 +152,25 @@ class NextSentenceDataset(DenoisingDataset):
             include context for next sentence denoising
             """            
             if self.context_fragment:
-                cutoff = self.context_cutoff[index]
-                tokens = self.dataset[index][:cutoff]
-                context = self.dataset[index][cutoff:]
+                cutoff = np.clip(
+                    (np.random.uniform(0.4,0.6) * self.sizes[index]).astype(int),
+                    1,                      # min
+                    self.sizes[index] - 1   # max
+                )
+                context = self.dataset[index][:cutoff]
+                tokens = self.dataset[index][cutoff:]
 
-                tokens = torch.cat([tokens, tokens.new([self.eos])])
-                context = torch.cat([tokens.new([self.vocab.bos()]), context])
-
-                if self.context_coinflip[index] > 0: # if positive, prefix as context.
-                    tmp = tokens
-                    tokens = context
-                    context = tmp
+                context = torch.cat([context, context.new([self.eos])])
+                tokens = torch.cat([tokens.new([self.vocab.bos()]), tokens])
             else:
                 tokens = self.dataset[index]
-                offset = self.context_coinflip[index]
+                offset = 1 if index==0 else -1
                 context = self.dataset[index+offset]
+
+            if np.random.random() < 0.5:
+                tmp = tokens
+                tokens = context
+                context = tmp
 
             assert tokens[-1] == self.eos
             assert context[-1] == self.eos
@@ -218,45 +222,15 @@ class NextSentenceDataset(DenoisingDataset):
         enforce ``--max-tokens`` during batching.
         includes context tokens
         """
-        if self.context_fragment:
-            cutoff = self.context_cutoff[index]
-            return max(cutoff, self.sizes[index] - cutoff)
-        else:
-            offset = self.context_coinflip[index]
-            return max(self.sizes[index], self.sizes[index+offset])
+        return self.sizes[index]        
 
     def size(self, index):
         """Return an example's size as a float or tuple. This value is used when
         filtering a dataset with ``--max-positions``.
         includes context tokens
         """
-        if self.context_fragment:
-            flip = self.context_coinflip[index]
-            cutoff = self.context_cutoff[index]
-            return (cutoff, self.sizes[index] - cutoff) if flip > 0 else (self.sizes[index] - cutoff, cutoff)
-            # if positive, prefix as context.
+        if self.context_fragment:            
+            return self.sizes[index]
         else:
-            offset = self.context_coinflip[index]
+            offset = 1 if index==0 else -1
             return (self.sizes[index+offset], self.sizes[index])
-
-    # def ordered_indices(self):
-    #     """Return an ordered list of indices. Batches will be constructed based
-    #     on this order."""
-    #     if self.shuffle:
-    #         indices = np.random.permutation(len(self))
-    #     else:
-    #         indices = np.arange(len(self))
-    #     return indices[np.argsort(self.sizes[indices], kind='mergesort')]
-
-    # def prefetch(self, indices):
-    #     self.src.prefetch(indices)
-    #     self.tgt.prefetch(indices)
-
-    # @property
-    # def supports_prefetch(self):
-    #     return (
-    #         hasattr(self.src, 'supports_prefetch')
-    #         and self.src.supports_prefetch
-    #         and hasattr(self.tgt, 'supports_prefetch')
-    #         and self.tgt.supports_prefetch
-    #     )
