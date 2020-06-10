@@ -63,10 +63,10 @@ class LaNMT(NATransformerModel):
             args.decoder_embed_dim
         )
         self.length_transform_logvar = nn.Parameter(torch.zeros(1)) # initialize to var=1
-        self.latent_loss_factor = args.latent_loss_factor
+        self.kl_div_loss_factor = args.kl_div_loss_factor
         self.max_update = args.max_update
-        self.num_update = 0
-        self.control_vae = args.control_vae
+        self.num_updates = 0
+        self.control_vae = getattr(args, "control_vae", False)
 
         if self.control_vae:
             control_args = json.loads(getattr(args, 'control_vae_args', '{}') or '{}')
@@ -74,47 +74,50 @@ class LaNMT(NATransformerModel):
         else:
             self.kl_budget = 1.
 
-
     @staticmethod
     def add_args(parser):
         NATransformerModel.add_args(parser)        
-        # parser.add_argument("--load-encoder-only", action="store_true", #type=bool, nargs='?', const=True, default=False,
-        # help="whether only load encoder states from checkpoint.")
-
+        parser.add_argument("--load-weight-level", default='all',
+                            choices=['all', 'encoder_decoder', 'encoder'],
+                            help="which components needs to load weights from checkpoint. all: load all. encoder_decoder: load encoder and decoder only. encoder: load encoder only.")
         parser.add_argument("--latent-dim", type=int, default=32,
                             help="dimension for latent vector.")
         parser.add_argument("--posterior-layers", type=int, default=3,
                             help="num layers for posterior transformer.")
-        parser.add_argument("--latent-loss-factor", type=float,
+        parser.add_argument("--kl-div-loss-factor", type=float,
                             help="weights on the kl divergence term in ELBO (or initial budget). ignored if using control-VAE")
         parser.add_argument("--control-vae", action="store_true",
                             help="use the PI algorithm introduced in ControlVAE to calculate the weight on KL-divergence on latent.")
         parser.add_argument('--control-vae-args', type=str, metavar='JSON',
                             help="""args for ControlVAE, a valid setup is: '{"v_kl": 3.0, "Kp": 0.01, "Ki": 0.0001, "beta_min": 0.0, "beta_max": 1.0 }' """)
 
-    # def load_state_dict(self, state_dict, strict=True, args=None):
-    #     """Copies parameters and buffers from *state_dict* into this module and
-    #     its descendants.
+    def load_state_dict(self, state_dict, strict=True, args=None):
+        """Copies parameters and buffers from *state_dict* into this module and
+        its descendants.
 
-    #     Overrides the method in :class:`nn.Module`. Compared with that method
-    #     this additionally "upgrades" *state_dicts* from old checkpoints.
-    #     """
+        Overrides the method in :class:`nn.Module`. Compared with that method
+        this additionally "upgrades" *state_dicts* from old checkpoints.
+        """
         
-    #     """Overrides fairseq_model.py
+        """Overrides fairseq_model.py
 
-    #     """
-    #     # pdb.set_trace()
-    #     # if getattr(args, "load_encoder_only", False)--gen-subset
-    #     if getattr(args, "load_encoder_only", False):
-    #         logger.warning("Will only load encoder weights!")
-    #         cur = self.state_dict()
-    #         for param in state_dict:
-    #             if re.match(r"^encoder\.", param) is not None:
-    #                 cur[param] = state_dict[param]
-    #         state_dict = cur
-
-    #     return super().load_state_dict(state_dict, strict=strict, args=args)
-
+        """
+        # pdb.set_trace()
+        if args.load_weight_level == "encoder":
+            logger.warning("Will only load encoder weights!")
+            cur = self.state_dict()
+            for param in state_dict:
+                if re.match(r"^encoder\.", param) is not None:
+                    cur[param] = state_dict[param]
+            state_dict = cur
+        elif args.load_weight_level == "encoder_decoder":
+            logger.warning("Will only load encoder and decoder weights!")
+            cur = self.state_dict()
+            for param in state_dict:
+                if re.match(r"^(encoder|decoder)\.", param) is not None:
+                    cur[param] = state_dict[param]
+            state_dict = cur
+        return super().load_state_dict(state_dict, strict=strict, args=args)
     
     @classmethod
     def build_model(cls, args, task):
@@ -199,15 +202,23 @@ class LaNMT(NATransformerModel):
         return z.mu + eps * std
 
     def set_num_updates(self, num_updates):
-        self.num_update = num_updates        
+        self.num_updates = num_updates
 
-    def calculate_kl_div(self, z0: Latent, z1: Latent):        
+    def calculate_kl_div(self, z0: Latent, z1: Latent):
         var0 = torch.exp(z0.logvar)
         var1 = torch.exp(z1.logvar)
-        kl = 0.5*((z1.logvar - z0.logvar) + (var0 + (z0.mu-z1.mu)**2)/var1 - 1).sum(-1)
+        kl = 0.5*((z1.logvar - z0.logvar) + (var0 + (z0.mu-z1.mu)**2)/var1 - 1).sum(-1) # sum over latent dim.
+
+        # we use mean over tokens in batch, same as in nat_loss.
+        def mean_ds(x: Tensor, dim=None) -> Tensor:
+            return (
+                x.float().mean().type_as(x)
+                if dim is None
+                else x.float().mean(dim).type_as(x)
+            )
 
         if self.control_vae:
-            kl = kl.sum(-1).mean() # tensor, has grads
+            kl = mean_ds(kl) # tensor, has grads
             e_t = self.controller.v_kl - kl.item() # float
             P_t = self.controller.Kp * torch.tensor(-e_t).sigmoid() # cpu tensor
             if self.controller.beta_min <= self.controller.beta_prev <= self.controller.beta_max:
@@ -219,13 +230,13 @@ class LaNMT(NATransformerModel):
                 max=self.controller.beta_max
             ).item() # float
             # update loss factor (beta)
-            self.latent_loss_factor = beta_t
+            self.kl_div_loss_factor = beta_t
             # update controller
             self.controller._replace(P=P_t.item(), I=I_t, beta_prev=beta_t)
         else:
             self.kl_budget = max(min(2.*(1-self.num_updates/self.max_update), 1.), 0.)
             kl = torch.max(kl.new([self.kl_budget]), kl)
-            kl = kl.sum(-1).mean()
+            kl = mean_ds(kl)
         return kl
 
     def length_transform(self, src_features, prev_output_tokens, src_masks=None, tgt_masks=None):
@@ -262,7 +273,7 @@ class LaNMT(NATransformerModel):
         prior_out = self.prior(encoder_out.encoder_out.transpose(1,0)) # T x B x Z -> B x T x Z
         
         # latent
-        latent_loss = self.calculate_kl_div(
+        kl_div_loss = self.calculate_kl_div(
             z0=posterior_out, 
             z1=prior_out
         )
@@ -290,9 +301,9 @@ class LaNMT(NATransformerModel):
                 "factor": self.decoder.length_loss_factor
             },
             # This will just addup your loss for you.
-            "latent":{
-                "loss": latent_loss,
-                "factor": self.latent_loss_factor
+            "kl_div":{
+                "loss": kl_div_loss,
+                "factor": self.kl_div_loss_factor
             }
         }
 
@@ -322,7 +333,7 @@ class LaNMT(NATransformerModel):
             posterior_out = self.posterior(src_tokens, src_lengths, output_tokens)
         
         # latent        
-        latent = self.sample_from(posterior_out)
+        latent = posterior_out.mu # delta posterior: don't sample, just use mean.
         latent = self.length_transform(latent, output_tokens)
         latent = self.latent_projection(latent)
 
@@ -508,6 +519,6 @@ class DecoderPassEmbed(NATransformerDecoder):
 )
 def lea_nat(args):
     nonautoregressive_transformer_wmt_en_de(args)
-    args.latent_dim = getattr(args, "latent_dim", 32)
+    args.latent_dim = getattr(args, "latent_dim", 8)
     args.posterior_layers = getattr(args, "posterior_layers", 3)
-    args.latent_loss_factor = getattr(args, "latent_loss_factor", 1.0)
+    args.kl_div_loss_factor = getattr(args, "kl_div_loss_factor", 1.0)
