@@ -24,6 +24,7 @@ from fairseq.modules.transformer_sentence_encoder import init_bert_params
 
 import re
 import pdb
+import json
 import logging
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,21 @@ Latent = NamedTuple(
     [
         ("mu", Tensor),  
         ("logvar", Tensor),  
+    ],
+)
+
+ControlVAERecord = NamedTuple(
+    "ControlVAERecord",
+    [
+        ("v_kl", float),
+        ("Kp", float),
+        ("Ki", float),
+        ("beta_min", float),
+        ("beta_max", float),
+        # below are records
+        ("P", float), 
+        ("I", float),
+        ("beta_prev", float),
     ],
 )
 
@@ -46,25 +62,35 @@ class LaNMT(NATransformerModel):
             args.latent_dim,
             args.decoder_embed_dim
         )
-        self.length_transform_logvar = nn.Parameter(torch.zeros(1)) # initialize to var=1        
+        self.length_transform_logvar = nn.Parameter(torch.zeros(1)) # initialize to var=1
         self.latent_loss_factor = args.latent_loss_factor
-        self.register_buffer('kl_budget', torch.ones(1))
-        # self.register_buffer('max_update', args.max_update) # saves to state dict ?
         self.max_update = args.max_update
+        self.num_update = 0
+        self.control_vae = args.control_vae
+
+        if self.control_vae:
+            control_args = json.loads(getattr(args, 'control_vae_args', '{}') or '{}')
+            self.controller = ControlVAERecord(P=0, I=0, beta_prev=0, **control_args)
+        else:
+            self.kl_budget = 1.
 
 
     @staticmethod
     def add_args(parser):
         NATransformerModel.add_args(parser)        
         # parser.add_argument("--load-encoder-only", action="store_true", #type=bool, nargs='?', const=True, default=False,
-        # help="whether only load encoder states from checkpoint.")       
+        # help="whether only load encoder states from checkpoint.")
 
         parser.add_argument("--latent-dim", type=int, default=32,
                             help="dimension for latent vector.")
         parser.add_argument("--posterior-layers", type=int, default=3,
                             help="num layers for posterior transformer.")
         parser.add_argument("--latent-loss-factor", type=float,
-                            help="weights on the length prediction loss")            
+                            help="weights on the kl divergence term in ELBO (or initial budget). ignored if using control-VAE")
+        parser.add_argument("--control-vae", action="store_true",
+                            help="use the PI algorithm introduced in ControlVAE to calculate the weight on KL-divergence on latent.")
+        parser.add_argument('--control-vae-args', type=str, metavar='JSON',
+                            help="""args for ControlVAE, a valid setup is: '{"v_kl": 3.0, "Kp": 0.01, "Ki": 0.0001, "beta_min": 0.0, "beta_max": 1.0 }' """)
 
     # def load_state_dict(self, state_dict, strict=True, args=None):
     #     """Copies parameters and buffers from *state_dict* into this module and
@@ -173,20 +199,34 @@ class LaNMT(NATransformerModel):
         return z.mu + eps * std
 
     def set_num_updates(self, num_updates):
-        # TODO : use ControlVAE's method, instead of a hard budget
-        if num_updates < self.max_update / 2:
-            self.kl_budget.fill_(1.)
-        else:
-            self.kl_budget.fill_((self.max_update - num_updates)/(self.max_update/2.))
+        self.num_update = num_updates        
 
     def calculate_kl_div(self, z0: Latent, z1: Latent):        
         var0 = torch.exp(z0.logvar)
         var1 = torch.exp(z1.logvar)
-        kl = 0.5*((z1.logvar - z0.logvar) + (var0 + (z0.mu-z1.mu)**2)/var1 - 1)
+        kl = 0.5*((z1.logvar - z0.logvar) + (var0 + (z0.mu-z1.mu)**2)/var1 - 1).sum(-1)
 
-        kl = torch.max(self.kl_budget, kl.sum(-1))
-        # kl = kl.view(kl.size(0), -1).sum(-1).mean()
-        return kl.sum(-1).mean()
+        if self.control_vae:
+            kl = kl.sum(-1).mean() # tensor, has grads
+            e_t = self.controller.v_kl - kl.item() # float
+            P_t = self.controller.Kp * torch.tensor(-e_t).sigmoid() # cpu tensor
+            if self.controller.beta_min <= self.controller.beta_prev <= self.controller.beta_max:
+                I_t = self.controller.I - self.controller.Ki*e_t # float
+            else:
+                I_t = self.controller.I # float
+            beta_t = (P_t + I_t + self.controller.beta_min).clamp(
+                min=self.controller.beta_min, 
+                max=self.controller.beta_max
+            ).item() # float
+            # update loss factor (beta)
+            self.latent_loss_factor = beta_t
+            # update controller
+            self.controller._replace(P=P_t.item(), I=I_t, beta_prev=beta_t)
+        else:
+            self.kl_budget = max(min(2.*(1-self.num_updates/self.max_update), 1.), 0.)
+            kl = torch.max(kl.new([self.kl_budget]), kl)
+            kl = kl.sum(-1).mean()
+        return kl
 
     def length_transform(self, src_features, prev_output_tokens, src_masks=None, tgt_masks=None):
         """
@@ -268,7 +308,6 @@ class LaNMT(NATransformerModel):
         )
 
     def forward_decoder(self, decoder_out, encoder_out, decoding_format=None, **kwargs):
-        # TODO: step = 0 -> use prior else use posterior
         step = decoder_out.step
         output_tokens = decoder_out.output_tokens
         output_scores = decoder_out.output_scores
