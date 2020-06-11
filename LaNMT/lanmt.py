@@ -80,9 +80,9 @@ class LaNMT(NATransformerModel):
         parser.add_argument("--load-weight-level", default='all',
                             choices=['all', 'encoder_decoder', 'encoder'],
                             help="which components needs to load weights from checkpoint. all: load all. encoder_decoder: load encoder and decoder only. encoder: load encoder only.")
-        parser.add_argument("--latent-dim", type=int, default=32,
+        parser.add_argument("--latent-dim", type=int,
                             help="dimension for latent vector.")
-        parser.add_argument("--posterior-layers", type=int, default=3,
+        parser.add_argument("--posterior-layers", type=int,
                             help="num layers for posterior transformer.")
         parser.add_argument("--kl-div-loss-factor", type=float,
                             help="weights on the kl divergence term in ELBO (or initial budget). ignored if using control-VAE")
@@ -239,11 +239,12 @@ class LaNMT(NATransformerModel):
             kl = mean_ds(kl)
         return kl
 
-    def length_transform(self, src_features, prev_output_tokens, src_masks=None, tgt_masks=None):
+    def length_transform(self, src_features, prev_output_tokens, src_masks=None):
         """
         src_features: (B, S, Z)
         prev_output_tokens: (B, T)
         mapping: (T, S)
+        src_masks: (B, S) src_tokens != pad
         out: (B, T, Z)
         """        
         S = src_features.size(1)
@@ -253,6 +254,12 @@ class LaNMT(NATransformerModel):
         ks = torch.arange(S).view(1,S).type_as(src_features)
         var = torch.exp(self.length_transform_logvar)
         mapping = -1/(2*var)*(ks - S*js/T)**2 # (T, S)
+
+        if src_masks is not None:
+            mapping = mapping.unsqueeze(0) # (1, T, S)
+            src_masks = src_masks.unsqueeze(1) # (B, 1, S)
+            mapping = mapping * src_masks.type_as(mapping) # (B, T, S)
+
         mapping = torch.softmax(mapping, dim=-1)
         return torch.matmul(mapping, src_features)
 
@@ -278,7 +285,7 @@ class LaNMT(NATransformerModel):
             z1=prior_out
         )
         latent = self.sample_from(posterior_out)
-        latent = self.length_transform(latent, prev_output_tokens)
+        latent = self.length_transform(latent, prev_output_tokens, src_masks=src_tokens.ne(self.pad))
         latent = self.latent_projection(latent)
 
         # decoding
