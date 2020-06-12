@@ -25,6 +25,7 @@ from fairseq.modules.transformer_sentence_encoder import init_bert_params
 import re
 import pdb
 import json
+import copy
 import logging
 
 logger = logging.getLogger(__name__)
@@ -174,7 +175,7 @@ class LaNMT(NATransformerModel):
 
     @classmethod
     def build_decoder(cls, args, tgt_dict, embed_tokens):
-        decoder = DecoderPassEmbed(args, tgt_dict, embed_tokens)
+        decoder = LaNMTDecoder(args, tgt_dict, embed_tokens)
         if getattr(args, "apply_bert_init", False):
             decoder.apply(init_bert_params)
         return decoder
@@ -379,12 +380,12 @@ class LatentPredictor(nn.Module):
 class Posterior(NATransformerModel):
     @classmethod
     def build_model(cls, args, task, src_dict, tgt_dict, encoder_embed_tokens, decoder_embed_tokens):
-        posterior_args = args
+        posterior_args = copy.deepcopy(args)
         posterior_args.encoder_layers = args.posterior_layers
         posterior_args.decoder_layers = args.posterior_layers
-        posterior_args.share_decoder_input_output_embed = False
-        posterior_args.share_all_embeddings = False
-        posterior_args.src_embedding_copy = False
+        # posterior_args.share_decoder_input_output_embed = False
+        # posterior_args.share_all_embeddings = False
+        # posterior_args.src_embedding_copy = False
 
         # TODO: swap encoder & decoder values
         # assumed same args for now.
@@ -425,20 +426,32 @@ class Posterior(NATransformerModel):
         return self.predict_head(features)
 
 
-class DecoderPassEmbed(NATransformerDecoder):
+class LaNMTDecoder(NATransformerDecoder):
     r"""
-    below is just the same as nat but with option to pass embeddings instead of tokens.
+    below is just the same as nat but with 2 difference:
+    1. option to pass embeddings instead of tokens.
+    2. length prediction from latent z
     """
     @ensemble_decoder
     def forward(self, normalize, encoder_out, prev_output_tokens, prev_output_embeds=None, step=0, **unused):
         features, _ = self.extract_features(
             prev_output_tokens=prev_output_tokens,
-            prev_output_embeds=prev_output_embeds,
+            prev_output_embeds=prev_output_embeds, # modification here
             encoder_out=encoder_out,
             embedding_copy=(step == 0) & self.src_embedding_copy,
         )
         decoder_out = self.output_layer(features)
         return F.log_softmax(decoder_out, -1) if normalize else decoder_out
+
+    @ensemble_decoder
+    def forward_length(self, normalize, encoder_out):
+        """ from mean pooling to just bos """
+        enc_feats = encoder_out.encoder_out  # T x B x C
+        enc_feats = enc_feats[0, ...]
+        if self.sg_length_pred:
+            enc_feats = enc_feats.detach()
+        length_out = F.linear(enc_feats, self.embed_length.weight)
+        return F.log_softmax(length_out, -1) if normalize else length_out
 
     def extract_features(
         self,

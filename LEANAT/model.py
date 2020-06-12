@@ -5,6 +5,11 @@ from fairseq.models.nat import (
     nonautoregressive_transformer_wmt_en_de
 )
 from fairseq.models import register_model, register_model_architecture
+from fairseq.models.transformer import (
+    base_architecture,
+    DEFAULT_MAX_SOURCE_POSITIONS,
+    DEFAULT_MAX_TARGET_POSITIONS
+)
 
 import torch
 import torch.nn.functional as F
@@ -17,12 +22,13 @@ from fairseq.modules.transformer_sentence_encoder import init_bert_params
 
 import re
 import pdb
+import copy
 import logging
 
 logger = logging.getLogger(__name__)
 
-PriorOut = NamedTuple(
-    "PriorOut",
+Latent = NamedTuple(
+    "Latent",
     [
         ("out", Tensor),  # (B, Ty, dim)
         ("attn", Tensor),  # (B, Ty, Tx)
@@ -31,21 +37,29 @@ PriorOut = NamedTuple(
 
 @register_model("lea_nat")
 class LeaNAT(NATransformerModel):
+    def __init__(self, args, encoder, decoder, prior, posterior):
+        super().__init__(args, encoder, decoder)
+        self.prior = prior
+        self.posterior = posterior
+        self.kl_div_loss_factor = args.kl_div_loss_factor
+        self.max_update = args.max_update
+        self.num_updates = 0
+        
     @staticmethod
     def add_args(parser):
         NATransformerModel.add_args(parser)        
-        parser.add_argument("--load-encoder-only", action="store_true", #type=bool, nargs='?', const=True, default=False,
-        help="whether only load encoder states from checkpoint.")        
-        parser.add_argument("--lea-loss-factor", type=float,
+        parser.add_argument("--load-weight-level", default='all',
+                            choices=['all', 'encoder_decoder', 'encoder'],
+                            help="which components needs to load weights from checkpoint. all: load all. encoder_decoder: load encoder and decoder only. encoder: load encoder only.")
+        parser.add_argument("--latent-dim", type=int,
+                            help="dimension for latent vector.")
+        parser.add_argument("--posterior-layers", type=int,
+                            help="num layers for posterior transformer.")
+        parser.add_argument("--kl-div-loss-factor", type=float,
+                            help="weights on the kl divergence term in ELBO (or initial budget). ignored if using control-VAE")
+        parser.add_argument("--posterior-attention-heads", type=int,
                             help="weights on the latent embedding attention loss.")
-        parser.add_argument("--lea-attention-heads", type=int,
-                            help="weights on the latent embedding attention loss.")
-        parser.add_argument("--sg-lea-pred", action="store_true",
-                            help="stop the gradients back-propagated from the latent embedding aligner predictor")
-        parser.add_argument("--lea-use-embed", action="store_true",
-                            help="Use encoder embeddings instead of encoder out as input to LEA module.")
-        parser.add_argument("--predict-masked-only", action="store_true",
-                            help="When computing loss, whether to ignore the unmasked tokens.")
+        
 
     def load_state_dict(self, state_dict, strict=True, args=None):
         """Copies parameters and buffers from *state_dict* into this module and
@@ -59,23 +73,101 @@ class LeaNAT(NATransformerModel):
 
         """
         # pdb.set_trace()
-        # if getattr(args, "load_encoder_only", False)--gen-subset
-        if getattr(args, "load_encoder_only", False):
+        if args.load_weight_level == "encoder":
             logger.warning("Will only load encoder weights!")
             cur = self.state_dict()
             for param in state_dict:
                 if re.match(r"^encoder\.", param) is not None:
                     cur[param] = state_dict[param]
             state_dict = cur
-
+        elif args.load_weight_level == "encoder_decoder":
+            logger.warning("Will only load encoder and decoder weights!")
+            cur = self.state_dict()
+            for param in state_dict:
+                if re.match(r"^(encoder|decoder)\.", param) is not None:
+                    cur[param] = state_dict[param]
+            state_dict = cur
         return super().load_state_dict(state_dict, strict=strict, args=args)
+    
+    @classmethod
+    def build_model(cls, args, task):
+        """Build a new model instance."""
+        """The same as models.transformer, but adds prior and posterior"""
+        # make sure all arguments are present in older models
+        base_architecture(args)
+
+        if args.encoder_layers_to_keep:
+            args.encoder_layers = len(args.encoder_layers_to_keep.split(","))
+        if args.decoder_layers_to_keep:
+            args.decoder_layers = len(args.decoder_layers_to_keep.split(","))
+
+        if getattr(args, "max_source_positions", None) is None:
+            args.max_source_positions = DEFAULT_MAX_SOURCE_POSITIONS
+        if getattr(args, "max_target_positions", None) is None:
+            args.max_target_positions = DEFAULT_MAX_TARGET_POSITIONS
+
+        src_dict, tgt_dict = task.source_dictionary, task.target_dictionary
+
+        if args.share_all_embeddings:
+            if src_dict != tgt_dict:
+                raise ValueError("--share-all-embeddings requires a joined dictionary")
+            if args.encoder_embed_dim != args.decoder_embed_dim:
+                raise ValueError(
+                    "--share-all-embeddings requires --encoder-embed-dim to match --decoder-embed-dim"
+                )
+            if args.decoder_embed_path and (
+                args.decoder_embed_path != args.encoder_embed_path
+            ):
+                raise ValueError(
+                    "--share-all-embeddings not compatible with --decoder-embed-path"
+                )
+            encoder_embed_tokens = cls.build_embedding(
+                args, src_dict, args.encoder_embed_dim, args.encoder_embed_path
+            )
+            decoder_embed_tokens = encoder_embed_tokens
+            args.share_decoder_input_output_embed = True
+        else:
+            encoder_embed_tokens = cls.build_embedding(
+                args, src_dict, args.encoder_embed_dim, args.encoder_embed_path
+            )
+            decoder_embed_tokens = cls.build_embedding(
+                args, tgt_dict, args.decoder_embed_dim, args.decoder_embed_path
+            )
+
+        encoder = cls.build_encoder(args, src_dict, encoder_embed_tokens)
+        decoder = cls.build_decoder(args, tgt_dict, decoder_embed_tokens)
+                
+        ## because posterior requires vocab and embeddings, we need to build them here.
+        prior = cls.build_posterior(args, tgt_dict, decoder_embed_tokens)
+        posterior = cls.build_posterior(args, tgt_dict, decoder_embed_tokens)
+        return cls(args, encoder, decoder, prior, posterior)
 
     @classmethod
     def build_decoder(cls, args, tgt_dict, embed_tokens):
-        decoder = LeaDecoder(args, tgt_dict, embed_tokens)
+        decoder = LaNMTDecoder(args, tgt_dict, embed_tokens)
         if getattr(args, "apply_bert_init", False):
             decoder.apply(init_bert_params)
         return decoder
+
+    @classmethod
+    def build_posterior(cls, args, tgt_dict, decoder_embed_tokens):
+        posterior = Posterior.build_model(args, tgt_dict, decoder_embed_tokens)
+        if getattr(args, "apply_bert_init", False):
+            posterior.apply(init_bert_params)
+        return posterior
+
+    def set_num_updates(self, num_updates):
+        self.num_updates = num_updates
+
+    def initialize_prior_input(self, target_tokens, mask_id=None):
+        unk = mask_id if mask_id is not None else self.tgt_dict.unk()
+        pad = self.tgt_dict.pad()
+        bos = self.tgt_dict.bos()
+        eos = self.tgt_dict.eos()
+
+        target_mask = target_tokens.eq(bos) | target_tokens.eq(
+            eos) | target_tokens.eq(pad)
+        return target_tokens.masked_fill(~target_mask, unk)
 
     def forward(
         self, src_tokens, src_lengths, prev_output_tokens, tgt_tokens, **kwargs
@@ -89,29 +181,11 @@ class LeaNAT(NATransformerModel):
         length_out = self.decoder.forward_length(normalize=False, encoder_out=encoder_out)
         length_tgt = self.decoder.forward_length_prediction(length_out, encoder_out, tgt_tokens)
 
-        # latent embedding alignment        
-        prior_out = self.decoder.forward_prior_attn(
-            encoder_out=encoder_out, 
-            prev_output_tokens=prev_output_tokens
-        )
-        if tgt_tokens is not None:
-            posterior_out = self.decoder.forward_posterior_attn(
-                prior_out=prior_out, 
-                encoder_out=encoder_out, 
-                prev_output_tokens=prev_output_tokens
-            )
-        else:
-            posterior_out = prior_out
-        # lea loss
-        # lea_loss = self.decoder.compute_lea_loss(
-        #     prior=prior_out.attn, 
-        #     posterior=posterior_out.attn,
-        #     mask=tgt_tokens.ne(self.pad)
-        # )
-
-        # when training, noise out prev_output_tokens / prev_output_embeds just like in cmlm
-
-
+        # posterior & prior
+        prior_tokens = self.initialize_prior_input(prev_output_tokens)
+        prior_out = self.prior(encoder_out, prior_tokens)
+        posterior_out = self.posterior(encoder_out, prev_output_tokens)
+                
         # decoding
         word_ins_out = self.decoder(
             normalize=False,
@@ -119,10 +193,7 @@ class LeaNAT(NATransformerModel):
             prev_output_embeds=posterior_out.out, # need to be same as pos emb (B, Ty, dim)
             encoder_out=encoder_out)
 
-        if getattr(self.args, "predict_masked_only", False):
-            word_ins_mask = prev_output_tokens.eq(self.unk)
-        else:
-            word_ins_mask = tgt_tokens.ne(self.pad)
+        word_ins_mask = tgt_tokens.ne(self.pad)
 
         return {
             "word_ins": {
@@ -135,165 +206,122 @@ class LeaNAT(NATransformerModel):
                 "factor": self.decoder.length_loss_factor
             },
             # this will leave nat_loss to compute kl_div for you. 
-            "lea":{
+            "kl_div":{
                 "out": probs_to_logits(prior_out.attn), "tgt": posterior_out.attn.detach(), # cannot let gradient go through your target!
                 "mask": tgt_tokens.ne(self.pad),
-                "factor": self.decoder.lea_loss_factor
+                "factor": self.kl_div_loss_factor
             }
-            # This will just addup your loss for you.
-            # "lea":{
-            #     "loss": lea_loss,
-            #     "factor": self.decoder.lea_loss_factor
-            # }
         }
 
-class LeaDecoder(NATransformerDecoder):
-    def __init__(self, args, dictionary, embed_tokens, no_encoder_attn=False):
-        super().__init__(
-            args, dictionary, embed_tokens, no_encoder_attn=no_encoder_attn
-        )
-        self.lea_loss_factor = getattr(args, "length_loss_factor", 0.1)
-        lea_attention_heads = getattr(args, "lea_attention_heads", args.decoder_attention_heads)
-        self.prior_attn = MultiheadAttention(
-            args.decoder_embed_dim,
-            lea_attention_heads,
-            kdim=getattr(args, "encoder_embed_dim", None),
-            vdim=getattr(args, "encoder_embed_dim", None),
-            dropout=args.attention_dropout,
-            encoder_decoder_attention=True,
-            q_noise=getattr(args, "quant_noise_pq", 0),
-            qn_block_size=getattr(args, "quant_noise_pq_block_size", 8),
-        )
-        self.posterior_attn = MultiheadAttention(
-            args.decoder_embed_dim,
-            lea_attention_heads,
-            kdim=getattr(args, "encoder_embed_dim", None),
-            vdim=getattr(args, "encoder_embed_dim", None),
-            dropout=args.attention_dropout,
-            encoder_decoder_attention=True,
-            q_noise=getattr(args, "quant_noise_pq", 0),
-            qn_block_size=getattr(args, "quant_noise_pq_block_size", 8),
-        )
-        self.sg_lea_prediction = getattr(args, "sg_lea_prediction", False)
-        self.lea_use_embed = getattr(args, "lea_use_embed", False)
+    def forward_decoder(self, decoder_out, encoder_out, decoding_format=None, **kwargs):
+        step = decoder_out.step
+        output_tokens = decoder_out.output_tokens
+        output_scores = decoder_out.output_scores
+        history = decoder_out.history
 
-    @ensemble_decoder
-    def forward_prior_attn(self, encoder_out, prev_output_tokens, **unused):
-        enc_feats = encoder_out.encoder_embedding if self.lea_use_embed else encoder_out.encoder_out  # T x B x C
-        src_masks = encoder_out.encoder_padding_mask  # B x T or None
-        if self.sg_lea_prediction:
-            enc_feats = enc_feats.detach()
-        # (B, Ty, dim)
-        positions = self.embed_positions(prev_output_tokens.transpose(1,0))
-        x, attn = self.prior_attn(
-            query=positions, 
-            key=enc_feats, # (Tx, B, dim)
-            value=enc_feats, 
-            key_padding_mask=src_masks,
-            incremental_state=None,
-            static_kv=True,
-            need_weights=True
+        # posterior & prior
+        if step == 0:
+            prior_tokens = self.initialize_prior_input(output_tokens)
+            posterior_out = self.prior(encoder_out, prior_tokens)
+        else:
+            posterior_out = self.posterior(encoder_out, output_tokens)
+        
+        # execute the decoder
+        output_masks = output_tokens.ne(self.pad)
+        _scores, _tokens = self.decoder(
+            normalize=True,
+            prev_output_tokens=output_tokens,
+            prev_output_embeds=posterior_out.out, # need to be same as pos emb (B, Ty, dim)
+            encoder_out=encoder_out,
+            step=step,
+        ).max(-1)
+
+        output_tokens.masked_scatter_(output_masks, _tokens[output_masks])
+        output_scores.masked_scatter_(output_masks, _scores[output_masks])
+        if history is not None:
+            history.append(output_tokens.clone())
+
+        return decoder_out._replace(
+            output_tokens=output_tokens,
+            output_scores=output_scores,
+            attn=None,
+            history=history
         )
-        x = F.dropout(x, p=self.dropout, training=self.training)
-        return PriorOut(
-            out=x.transpose(1,0), # (B, Ty, dim)
+
+
+class Posterior(NATransformerDecoder):
+    @classmethod
+    def build_model(cls, args, tgt_dict, decoder_embed_tokens):
+        posterior_args = copy.deepcopy(args)
+        posterior_args.decoder_embed_dim = args.latent_dim
+        posterior_args.decoder_ffn_embed_dim = args.latent_dim*4
+        posterior_args.decoder_layers = args.posterior_layers
+        posterior_args.decoder_attention_heads = args.posterior_attention_heads
+        posterior_args.decoder_output_dim = args.decoder_embed_dim
+        return cls(posterior_args, tgt_dict, decoder_embed_tokens)
+
+    def forward(
+        self, encoder_out, prev_output_tokens,
+    ):
+        x, decoder_padding_mask = self.forward_embedding(prev_output_tokens)
+
+        # B x T x C -> T x B x C
+        x = x.transpose(0, 1)
+        attn = None
+        inner_states = [x]
+
+        # decoder layers
+        for i, layer in enumerate(self.layers):
+            x, attn, _ = layer(
+                x,
+                encoder_out.encoder_out if encoder_out is not None else None,
+                encoder_out.encoder_padding_mask if encoder_out is not None else None,
+                self_attn_mask=None,
+                self_attn_padding_mask=decoder_padding_mask,
+                need_attn=True, # modification here
+            )
+            inner_states.append(x)
+
+        if self.layer_norm:
+            x = self.layer_norm(x)
+
+        # T x B x C -> B x T x C
+        x = x.transpose(0, 1)
+
+        if self.project_out_dim is not None:
+            x = self.project_out_dim(x)
+
+        return Latent(
+            out=x, # (B, Ty, dim)
             attn=attn # (B, Ty, Tx)
         )
 
-    @ensemble_decoder
-    def forward_posterior_attn(self, encoder_out, prev_output_tokens, **unused):        
-        enc_feats = encoder_out.encoder_embedding if self.lea_use_embed else encoder_out.encoder_out  # T x B x C
-        src_masks = encoder_out.encoder_padding_mask  # B x T or None
-        if self.sg_lea_prediction:
-            enc_feats = enc_feats.detach()
-        # (B, Ty, dim)
-        x, _ = self.forward_embedding(prev_output_tokens.transpose(1,0)) # with positional encoding
-        x, posterior_attn = self.prior_attn(
-            query=x, 
-            key=enc_feats, # (Tx, B, dim)
-            value=enc_feats,
-            key_padding_mask=src_masks,
-            incremental_state=None,
-            static_kv=True,
-            need_weights=True
-        )
-        x = F.dropout(x, p=self.dropout, training=self.training)
-        posterior_out = PriorOut(
-            out=x.transpose(1,0), # (B, Ty, dim)
-            attn=posterior_attn # (B, Ty, Tx)
-        )
-        return posterior_out
-
-    # @ensemble_decoder
-    # def forward_posterior_attn(self, prior_out, encoder_out, tgt_tokens=None, **unused):
-    #     if tgt_tokens is not None:
-    #         enc_feats = encoder_out.encoder_embedding if self.lea_use_embed else encoder_out.encoder_out  # T x B x C
-    #         src_masks = encoder_out.encoder_padding_mask  # B x T or None
-    #         if self.sg_lea_prediction:
-    #             enc_feats = enc_feats.detach()
-    #         # (B, Ty, dim)
-    #         x, _ = self.forward_embedding(tgt_tokens.transpose(1,0)) # with positional encoding
-    #         x, posterior_attn = self.prior_attn(
-    #             query=x, 
-    #             key=enc_feats, # (Tx, B, dim)
-    #             value=enc_feats,
-    #             key_padding_mask=src_masks,
-    #             incremental_state=None,
-    #             static_kv=True,
-    #             need_weights=True
-    #         )
-    #         x = F.dropout(x, p=self.dropout, training=self.training)
-    #         posterior_out = PriorOut(
-    #             out=x.transpose(1,0), # (B, Ty, dim)
-    #             attn=posterior_attn # (B, Ty, Tx)
-    #         )
-    #     else:
-    #         posterior_out = prior_out
-    #     return posterior_out
-
-    # def compute_lea_loss(self, prior, posterior, mask=None, factor=1.0):
-    #     """ In case want to use L1 or L2 loss.
-    #         outputs: batch x len x d_model
-    #         targets: batch x len
-    #         masks:   batch x len
-
-    #         policy_logprob: if there is some policy
-    #             depends on the likelihood score as rewards.
-    #     """
-    #             
-    #     def mean_ds(x: Tensor, dim=None) -> Tensor:
-    #         return (
-    #             x.float().mean().type_as(x)
-    #             if dim is None
-    #             else x.float().mean(dim).type_as(x)
-    #         )
-    #     posterior = posterior.detach() # no loss through posterior
-
-    #     if masks is not None:
-    #         prior, posterior = prior[masks], posterior[masks]
-
-    #     if masks is not None and not masks.any():
-    #         loss = torch.tensor(0)
-    #     else:
-    #         logits = F.log_softmax(prior, dim=-1)
-    #         losses = F.kl_div(logits, posterior.to(logits.device), reduction='none')
-    #         losses = losses.sum(-1) # sum the Tx dim, which is features.
-    #         loss = mean_ds(losses)
-    #     return loss = loss * factor
-
+class LaNMTDecoder(NATransformerDecoder):
     r"""
-    below is just the same as nat but with option to pass embeddings instead of tokens.
+    below is just the same as nat but with 2 difference:
+    1. option to pass embeddings instead of tokens.
+    2. length prediction from latent z
     """
     @ensemble_decoder
     def forward(self, normalize, encoder_out, prev_output_tokens, prev_output_embeds=None, step=0, **unused):
         features, _ = self.extract_features(
             prev_output_tokens=prev_output_tokens,
-            prev_output_embeds=prev_output_embeds,
+            prev_output_embeds=prev_output_embeds, # modification here
             encoder_out=encoder_out,
             embedding_copy=(step == 0) & self.src_embedding_copy,
         )
         decoder_out = self.output_layer(features)
         return F.log_softmax(decoder_out, -1) if normalize else decoder_out
+
+    @ensemble_decoder
+    def forward_length(self, normalize, encoder_out):
+        """ from mean pooling to just bos """
+        enc_feats = encoder_out.encoder_out  # T x B x C
+        enc_feats = enc_feats[0, ...]
+        if self.sg_length_pred:
+            enc_feats = enc_feats.detach()
+        length_out = F.linear(enc_feats, self.embed_length.weight)
+        return F.log_softmax(length_out, -1) if normalize else length_out
 
     def extract_features(
         self,
@@ -381,35 +409,7 @@ class LeaDecoder(NATransformerDecoder):
 )
 def lea_nat(args):
     nonautoregressive_transformer_wmt_en_de(args)
-
-@register_model_architecture(
-    "lea_nat", "lea_iwslt_14"
-)
-def for_iwslt_14(args):
-    args.encoder_embed_dim = getattr(args, "encoder_embed_dim", 256)
-    args.encoder_ffn_embed_dim = getattr(args, "encoder_ffn_embed_dim", 256)
-    args.encoder_layers = getattr(args, "encoder_layers", 5)
-    args.encoder_attention_heads = getattr(args, "encoder_attention_heads", 4)
-
-    args.decoder_embed_dim = getattr(args, "decoder_embed_dim", 256)
-    args.decoder_ffn_embed_dim = getattr(args, "decoder_ffn_embed_dim", 256)
-    args.decoder_layers = getattr(args, "decoder_layers", 5)
-    args.decoder_attention_heads = getattr(args, "decoder_attention_heads", 4)
-
-    nonautoregressive_transformer_wmt_en_de(args)
-
-@register_model_architecture(
-    "lea_nat", "lea_iwslt_16"
-)
-def for_iwslt_16(args):
-    args.encoder_embed_dim = getattr(args, "encoder_embed_dim", 278)
-    args.encoder_ffn_embed_dim = getattr(args, "encoder_ffn_embed_dim", 507)
-    args.encoder_layers = getattr(args, "encoder_layers", 5)
-    args.encoder_attention_heads = getattr(args, "encoder_attention_heads", 2)
-
-    args.decoder_embed_dim = getattr(args, "decoder_embed_dim", 278)
-    args.decoder_ffn_embed_dim = getattr(args, "decoder_ffn_embed_dim", 507)
-    args.decoder_layers = getattr(args, "decoder_layers", 5)
-    args.decoder_attention_heads = getattr(args, "decoder_attention_heads", 2)
-
-    nonautoregressive_transformer_wmt_en_de(args)
+    args.latent_dim = getattr(args, "latent_dim", 64)
+    args.posterior_layers = getattr(args, "posterior_layers", 1)
+    args.kl_div_loss_factor = getattr(args, "kl_div_loss_factor", 1.0)
+    args.posterior_attention_heads = getattr(args, "posterior_attention_heads", 2)
