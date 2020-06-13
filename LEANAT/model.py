@@ -59,7 +59,10 @@ class LeaNAT(NATransformerModel):
                             help="weights on the kl divergence term in ELBO (or initial budget). ignored if using control-VAE")
         parser.add_argument("--posterior-attention-heads", type=int,
                             help="weights on the latent embedding attention loss.")
-        
+        parser.add_argument("--sg-latent-prediction", action="store_true",
+                            help="stop the gradients back-propagated from the latent embedding aligner predictor")
+        parser.add_argument("--latent-use-embed", action="store_true",
+                            help="Use encoder embeddings instead of encoder out as input to LEA module.")
 
     def load_state_dict(self, state_dict, strict=True, args=None):
         """Copies parameters and buffers from *state_dict* into this module and
@@ -258,11 +261,19 @@ class Posterior(NATransformerDecoder):
         posterior_args.decoder_layers = args.posterior_layers
         posterior_args.decoder_attention_heads = args.posterior_attention_heads
         posterior_args.decoder_output_dim = args.decoder_embed_dim
-        return cls(posterior_args, tgt_dict, decoder_embed_tokens)
+        posterior = cls(posterior_args, tgt_dict, decoder_embed_tokens)
+        posterior.sg_latent_prediction = getattr(args, "sg_latent_prediction", False)
+        posterior.latent_use_embed = getattr(args, "latent_use_embed", False)
+        return posterior
 
     def forward(
         self, encoder_out, prev_output_tokens,
     ):
+        enc_feats = encoder_out.encoder_embedding if self.latent_use_embed else encoder_out.encoder_out  # T x B x C	    @classmethod
+        src_masks = encoder_out.encoder_padding_mask  # B x T or None
+        if self.sg_latent_prediction:
+            enc_feats = enc_feats.detach()
+
         x, decoder_padding_mask = self.forward_embedding(prev_output_tokens)
 
         # B x T x C -> T x B x C
@@ -274,8 +285,8 @@ class Posterior(NATransformerDecoder):
         for i, layer in enumerate(self.layers):
             x, attn, _ = layer(
                 x,
-                encoder_out.encoder_out if encoder_out is not None else None,
-                encoder_out.encoder_padding_mask if encoder_out is not None else None,
+                enc_feats,
+                src_masks,
                 self_attn_mask=None,
                 self_attn_padding_mask=decoder_padding_mask,
                 need_attn=True, # modification here
@@ -409,7 +420,7 @@ class LaNMTDecoder(NATransformerDecoder):
 )
 def lea_nat(args):
     nonautoregressive_transformer_wmt_en_de(args)
-    args.latent_dim = getattr(args, "latent_dim", 64)
+    args.latent_dim = getattr(args, "latent_dim", 8)
     args.posterior_layers = getattr(args, "posterior_layers", 1)
     args.kl_div_loss_factor = getattr(args, "kl_div_loss_factor", 1.0)
-    args.posterior_attention_heads = getattr(args, "posterior_attention_heads", 2)
+    args.posterior_attention_heads = getattr(args, "posterior_attention_heads", 1)
