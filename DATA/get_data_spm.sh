@@ -5,6 +5,7 @@ DATASET=$1  # {'wmt14', 'wmt17', 'newscrawl'}
 WORKERS=4
 OUTDIR=$DATASET # if not set, use default value of dataset's name
 PREFIX=/media/george/Storage/DATA # put . to use pwd
+N_SHARDS=4 # split training data into how many parts
 
 SPM_MODEL=./data-bin/newscrawl/spm
 # 'None', don't apply bpe
@@ -43,7 +44,7 @@ elif [ $DATASET = "newscrawl" ]; then
 
     DATADIR='newscrawl.raw'
     DATASCRIPT='scripts/spm/get_newscrawl_mono.sh'
-    langs='cs' #'en de fr es cs'
+    langs='cs en de fr es'
 
 else
     echo "DATASET: $DATASET is not supported"
@@ -51,10 +52,10 @@ else
 fi
 
 OUTDIR=$(pwd)/data-bin/$OUTDIR
-# if [ -d $OUTDIR ]; then
-#     echo "$OUTDIR is already existed. Please change the OUTDIR or remove $OUTDIR"
-#     exit
-# fi
+if [ -d $OUTDIR$N_SHARDS ]; then
+    echo "$OUTDIR$N_SHARDS already exists. Please change the OUTDIR or remove $OUTDIR"
+    exit
+fi
 
 PREFIX=${PREFIX:='.'} # just in case
 DATADIR=$PREFIX/$DATADIR
@@ -65,9 +66,9 @@ for split in train valid test; do
     for l in $langs;do
         file=$DATADIR/tmp/$split.$l
         if [ -f $file ]; then
-            echo "$file is exist"
+            echo "$file exists"
         else
-            echo "$file is not exist"
+            echo "$file does not exist"
             exist=0
         fi
     done
@@ -192,6 +193,24 @@ if [ $DATASET = "newscrawl" ] || [ $DATASET = 'europarl' ]; then
     echo "dict size :"
     wc -l < $DICT
 
+    # split
+    # -e :do not generate empty output files
+    # -number l/CHUNKS :split into N files without splitting lines/records       
+    for l in $langs; do \
+        if [ -f $DATADIR/train$N_SHARDS.$l ]; then
+            echo "found $DATADIR/train$N_SHARDS.$l, skipping split"
+        else
+            echo "splitting $DATADIR/train.$l"
+            split -e \
+                --number l/$N_SHARDS \
+                --numeric-suffix=1 \
+                --suffix-length=1 \
+                --additional-suffix=.$l \
+                $DATADIR/train.$l $DATADIR/train
+        fi
+    done
+
+    # validation shared
     for l in $langs; do \
         fairseq-preprocess \
         --only-source \
@@ -199,21 +218,45 @@ if [ $DATASET = "newscrawl" ] || [ $DATASET = 'europarl' ]; then
         --srcdict $DICT \
         --joined-dictionary \
         --bpe sentencepiece \
-        --trainpref $DATADIR/train \
         --validpref $DATADIR/valid \
-        --destdir $OUTDIR \
+        --destdir ${OUTDIR}1 \
         --workers $WORKERS
     done
 
-    # format for multilingual denoising.
-    cd $OUTDIR
-    for l in $langs; do \
-        mkdir -p $l
-        for SPLIT in train valid; do \
-            mv $SPLIT.$l-None.$l.bin $l/$SPLIT.bin 
-            mv $SPLIT.$l-None.$l.idx $l/$SPLIT.idx
+    for (( i = 1; i <= $N_SHARDS; i++ )); do \
+        for l in $langs; do \
+            mkdir -p $OUTDIR$i/$l
+            cd $OUTDIR$i/$l
+
+            if [ -f train.bin ] && [ -f train.idx ]; then
+                echo "$l/train.bin & .idx found, skipping fairseq-preprocess"
+            elif [ -f train.$l-None.$l.bin ] && [ -f train.$l-None.$l.bin ]; then
+                echo "$l/train.$l-None.$l.bin & .idx found, skipping fairseq-preprocess"
+                echo "rename to $l/train.bin & .idx"
+                mv train.$l-None.$l.bin train.bin 
+                mv train.$l-None.$l.idx train.idx
+            else                
+                fairseq-preprocess \
+                --only-source \
+                --source-lang $l \
+                --srcdict $DICT \
+                --joined-dictionary \
+                --bpe sentencepiece \
+                --trainpref $DATADIR/train$i \
+                --destdir $OUTDIR$i/$l \
+                --workers $WORKERS
+
+                mv train.$l-None.$l.bin train.bin 
+                mv train.$l-None.$l.idx train.idx
+            fi
+
+            echo "link $l/valid.bin & .idx to ${OUTDIR}1/valid.$l-None.$l.bin & .idx"
+            # ln -s ${OUTDIR}1/valid.$l-None.$l.bin valid.bin
+            # ln -s ${OUTDIR}1/valid.$l-None.$l.idx valid.idx
+            cp ${OUTDIR}1/valid.$l-None.$l.bin valid.bin
+            cp ${OUTDIR}1/valid.$l-None.$l.idx valid.idx
         done
-        cp dict.$l.txt dict.txt
+        cp $DICT $OUTDIR$i/dict.txt
     done
 else
     fairseq-preprocess $preprocess_args
