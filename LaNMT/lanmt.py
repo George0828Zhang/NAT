@@ -38,21 +38,6 @@ Latent = NamedTuple(
     ],
 )
 
-ControlVAERecord = NamedTuple(
-    "ControlVAERecord",
-    [
-        ("v_kl", float),
-        ("Kp", float),
-        ("Ki", float),
-        ("beta_min", float),
-        ("beta_max", float),
-        # below are records
-        ("P", float), 
-        ("I", float),
-        ("beta_prev", float),
-    ],
-)
-
 @register_model("lanmt")
 class LaNMT(NATransformerModel):
     def __init__(self, args, encoder, decoder, prior, posterior):
@@ -71,7 +56,8 @@ class LaNMT(NATransformerModel):
 
         if self.control_vae:
             control_args = json.loads(getattr(args, 'control_vae_args', '{}') or '{}')
-            self.controller = ControlVAERecord(P=0, I=0, beta_prev=0, **control_args)
+            from .ctrlvae import ctrlVAE
+            self.controller = ctrlVAE(control_args)
         else:
             self.kl_budget = 1.
 
@@ -219,21 +205,8 @@ class LaNMT(NATransformerModel):
             )
 
         if self.control_vae:
-            kl = mean_ds(kl) # tensor, has grads
-            e_t = self.controller.v_kl - kl.item() # float
-            P_t = self.controller.Kp * torch.tensor(-e_t).sigmoid() # cpu tensor
-            if self.controller.beta_min <= self.controller.beta_prev <= self.controller.beta_max:
-                I_t = self.controller.I - self.controller.Ki*e_t # float
-            else:
-                I_t = self.controller.I # float
-            beta_t = (P_t + I_t + self.controller.beta_min).clamp(
-                min=self.controller.beta_min, 
-                max=self.controller.beta_max
-            ).item() # float
-            # update loss factor (beta)
-            self.kl_div_loss_factor = beta_t
-            # update controller
-            self.controller._replace(P=P_t.item(), I=I_t, beta_prev=beta_t)
+            kl = mean_ds(kl) # tensor, has grads            
+            self.kl_div_loss_factor = self.controller(kl).item()
         else:
             self.kl_budget = max(min(2.*(1-self.num_updates/self.max_update), 1.), 0.)
             kl = torch.max(kl.new([self.kl_budget]), kl)
@@ -308,9 +281,9 @@ class LaNMT(NATransformerModel):
                 "out": length_out, "tgt": length_tgt,
                 "factor": self.decoder.length_loss_factor
             },
-            # This will just addup your loss for you.
+            # This will just addup your loss for you. i.e. factor is not applied. need to apply ourselves.
             "kl_div":{
-                "loss": kl_div_loss,
+                "loss": kl_div_loss * self.kl_div_loss_factor, 
                 "factor": self.kl_div_loss_factor
             }
         }
@@ -385,7 +358,7 @@ class Posterior(NATransformerModel):
         posterior_args.decoder_layers = args.posterior_layers
         # posterior_args.share_decoder_input_output_embed = False
         # posterior_args.share_all_embeddings = False
-        # posterior_args.src_embedding_copy = False
+        posterior_args.src_embedding_copy = False
 
         # TODO: swap encoder & decoder values
         # assumed same args for now.
@@ -428,9 +401,8 @@ class Posterior(NATransformerModel):
 
 class LaNMTDecoder(NATransformerDecoder):
     r"""
-    below is just the same as nat but with 2 difference:
+    below is just the same as nat but with 1 difference:
     1. option to pass embeddings instead of tokens.
-    2. length prediction from latent z
     """
     @ensemble_decoder
     def forward(self, normalize, encoder_out, prev_output_tokens, prev_output_embeds=None, step=0, **unused):
@@ -442,16 +414,6 @@ class LaNMTDecoder(NATransformerDecoder):
         )
         decoder_out = self.output_layer(features)
         return F.log_softmax(decoder_out, -1) if normalize else decoder_out
-
-    @ensemble_decoder
-    def forward_length(self, normalize, encoder_out):
-        """ from mean pooling to just bos """
-        enc_feats = encoder_out.encoder_out  # T x B x C
-        enc_feats = enc_feats[0, ...]
-        if self.sg_length_pred:
-            enc_feats = enc_feats.detach()
-        length_out = F.linear(enc_feats, self.embed_length.weight)
-        return F.log_softmax(length_out, -1) if normalize else length_out
 
     def extract_features(
         self,
