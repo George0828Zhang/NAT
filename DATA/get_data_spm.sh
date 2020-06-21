@@ -7,7 +7,7 @@ OUTDIR=$DATASET # if not set, use default value of dataset's name
 PREFIX=/media/george/Storage/DATA # put . to use pwd
 N_SHARDS=4 # split training data into how many parts
 
-SPM_MODEL=./data-bin/newscrawl/spm
+SPM_MODEL=./data-bin/newscrawl1/spm
 # 'None', don't apply bpe
 # 'Current', learn on current dataset
 # other, use other as code
@@ -15,7 +15,7 @@ SPM_MODEL=./data-bin/newscrawl/spm
 N_TOKENS=40000 # only used when learning BPE
 
 # dictionary for binirize the data
-DICT=./data-bin/newscrawl/dict.txt # if DICT='None', learning dict on current dataset
+DICT=./data-bin/newscrawl1/dict.txt # if DICT='None', learning dict on current dataset
 
 if [ $DATASET = 'wmt17' ]; then
     
@@ -34,6 +34,16 @@ elif [ $DATASET = 'wmt14' ]; then
     DATADIR='wmt14_en_de'
     DATASCRIPT='scripts/spm/get_wmt17.sh'
     EXTRAOPTIONS='--icml17'
+    src=de
+    tgt=en
+    langs='de en'
+
+elif [ $DATASET = 'wmt14-distill' ] || [ $DATASET = 'wmt14_distill' ]; then
+    
+    OUTDIR=${OUTDIR:='wmt14_distill'}
+
+    DATADIR='wmt14_distill'
+    DATASCRIPT='scripts/spm/get_wmt14_distill.sh'
     src=de
     tgt=en
     langs='de en'
