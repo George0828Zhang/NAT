@@ -110,6 +110,7 @@ class NextSentenceDataset(DenoisingDataset):
     ):
         self.permute = args.permute
         self.randomize_mask_ratio = args.randomize_mask_ratio
+        self.random_src_tgt = args.random_src_tgt
         
         if args.context_type == "sentence":
             self.context_fragment = False
@@ -167,7 +168,7 @@ class NextSentenceDataset(DenoisingDataset):
                 offset = 1 if index==0 else -1
                 context = self.dataset[index+offset]
 
-            if np.random.random() < 0.5:
+            if self.random_src_tgt and np.random.random() < 0.5:
                 tmp = tokens
                 tokens = context
                 context = tmp
