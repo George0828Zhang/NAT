@@ -23,6 +23,7 @@ from fairseq.data.encoders.utils import get_whole_word_mask
 from fairseq.tasks import register_task
 
 ### patched
+import copy
 import torch
 import json
 from argparse import Namespace
@@ -53,11 +54,14 @@ class NATNextSentenceGenerationTask(MultilingualDenoisingTask):
             '--randomize-mask-ratio', action="store_true",
             help='use random ratio to mask input.'
         )
-        # TODO
         parser.add_argument(
             '--context-type', default="sentence",
             choices=['sentence', 'fragment'],
             help='to predict target, use neighboring sentences or sentence fragments(prefix/suffix) as context.'
+        )
+        parser.add_argument(
+            '--random-src-tgt', action="store_true",
+            help='randomly switch source and target.'
         )
 
         # parser.add_argument('--eval-lm', action='store_true',
@@ -260,13 +264,15 @@ class NATNextSentenceGenerationTask(MultilingualDenoisingTask):
         optimizer.backward(loss)
         return loss, sample_size, logging_output
 
-    def valid_step(self, sample, model, criterion):
+    def valid_step(self, sample, model, criterion):        
         model.eval()
         with torch.no_grad():
-            loss, sample_size, logging_output = criterion(model, sample)
+            sample_cp = copy.deepcopy(sample)  
+            del sample
+            loss, sample_size, logging_output = criterion(model, sample_cp)
 
             if self.args.eval_lm_print_samples:
-                self._inference_print(self.sequence_generator, sample, model)                
+                self._inference_print(self.sequence_generator, sample_cp, model)                
         return loss, sample_size, logging_output
 
     def _inference_print(self, generator, sample, model):
