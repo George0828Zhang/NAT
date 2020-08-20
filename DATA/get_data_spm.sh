@@ -4,18 +4,18 @@ PATH=$HOME/.local/bin:$PATH
 DATASET=$1  # {'wmt14', 'wmt17', 'newscrawl'}
 WORKERS=4
 OUTDIR=$DATASET # if not set, use default value of dataset's name
-PREFIX=/media/george/Storage/DATA # put . to use pwd
+PREFIX=/media/george/Data # put . to use pwd
 N_SHARDS=4 # split training data into how many parts
 
-SPM_MODEL=./data-bin/newscrawl1/spm
+SPM_MODEL='Current'
 # 'None', don't apply bpe
 # 'Current', learn on current dataset
 # other, use other as code
 
-N_TOKENS=40000 # only used when learning BPE
+N_TOKENS=32000 # only used when learning BPE
 
 # dictionary for binirize the data
-DICT=./data-bin/newscrawl1/dict.txt # if DICT='None', learning dict on current dataset
+DICT='None' # if DICT='None', learning dict on current dataset
 
 if [ $DATASET = 'wmt17' ]; then
     
@@ -55,6 +55,16 @@ elif [ $DATASET = "newscrawl" ]; then
     DATADIR='newscrawl.raw'
     DATASCRIPT='scripts/spm/get_newscrawl_mono.sh'
     langs='cs en de fr es'
+
+elif [ $DATASET = 'iwslt14-enes' ]; then
+    
+    OUTDIR=${OUTDIR:='iwslt14_en_es'}
+
+    DATADIR='iwslt14.en-es.raw'
+    DATASCRIPT='scripts/spm/get_iwslt14_enes.sh'
+    src=en
+    tgt=es
+    langs='en es'
 
 else
     echo "DATASET: $DATASET is not supported"
