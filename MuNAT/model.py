@@ -29,6 +29,10 @@ class CMLMMutualLearnModel(CMLMNATransformerModel):
         super().__init__(args, encoder, decoder)
         self.peer = peer
         self.peer_type = args.peer_type
+        self.register_buffer("num_updates", torch.zeros((1,), dtype=torch.int))
+
+    def set_num_updates(self, num_updates):
+        self.num_updates.fill_(num_updates)
     
     @staticmethod
     def add_args(parser):
