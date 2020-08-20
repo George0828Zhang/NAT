@@ -116,20 +116,19 @@ class MutualLearningCriterion(FairseqCriterion):
         )
         tgt_tokens, nat_prev_output_tokens = sample["target"], sample["prev_target"]
 
-        # forward model
+        """ forward model """
         outputs = model(src_tokens, src_lengths, nat_prev_output_tokens, tgt_tokens)
-        model_logits, model_masks, smoothing, gt_factor = (
+        model_logits, model_masks, smoothing = (
             outputs["word_ins"]["out"],
             outputs["word_ins"].get("mask", None),
-            outputs["word_ins"].get("ls", 0.0),
-            outputs["word_ins"].get("factor", 1.0)
-        )        
+            outputs["word_ins"].get("ls", 0.0)
+        )
 
-        # forward peer
+        """ forward peer """
         peer = model.peer
         peer_outputs = peer(
             src_tokens, src_lengths,
-            nat_prev_output_tokens if model.peer_type == "cmlm" else nat_prev_output_tokens,
+            nat_prev_output_tokens if model.peer_type == "cmlm" else prev_output_tokens,
             tgt_tokens
         )
         peer_logits, peer_masks = (
@@ -147,44 +146,40 @@ class MutualLearningCriterion(FairseqCriterion):
             tgt_tokens,
             model_masks,
             smoothing,
-            name='gt-loss',
-            factor=gt_factor
+            name='model-gt-loss',
+            factor=0.5
         )
         model_kd_losses = self._compute_loss(
             model_logits,
-            # peer.get_normalized_probs(peer_logits, log_probs=False).detach(),
             logits_to_probs(peer_logits).detach(),
             model_masks,
-            name='model-kd-loss'
+            name='model-kd-loss',
+            factor=0.5
         )
 
         """ peer loss
         1. label smoothed ground-truth(gt) loss
         2. kd loss
         """
-        # print(peer_masks.dtype, peer_masks.size())
         peer_gt_losses = self._compute_loss(
             peer_logits,
             tgt_tokens,
             peer_masks,
             smoothing,
             name='peer-gt-loss',
-            factor=gt_factor
+            factor=0.5
         )
         peer_kd_losses = self._compute_loss(
             peer_logits,
-            # model.get_normalized_probs(model_logits, log_probs=False).detach(),
             logits_to_probs(model_logits).detach(),
             peer_masks,
-            name='peer-kd-loss'
+            name='peer-kd-loss',
+            factor=0.5
         )
 
         """ length prediction module
         length prediction loss
         """
-        # pdb.set_trace()
-        # print(outputs["length"].get("out").shape,
-        # outputs["length"].get("tgt").shape)
         length_losses = self._compute_loss(
             outputs["length"].get("out"),
             outputs["length"].get("tgt"),

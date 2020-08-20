@@ -137,3 +137,20 @@ def base_mutual_cmlm_architecture(args):
     args.share_decoder_embeddings = getattr(args, 'share_decoder_embeddings', False)
     args.share_encoders = getattr(args, 'share_encoders', False)
     args.peer_type = getattr(args, 'peer_type', "ar")
+
+
+
+@register_model_architecture('mutual_cmlm', 'mutual_cmlm_small')
+def small_mutual_cmlm_architecture(args):
+    
+    args.encoder_embed_dim = getattr(args, "encoder_embed_dim", 256)
+    args.encoder_ffn_embed_dim = getattr(args, "encoder_ffn_embed_dim", 256)
+    args.encoder_layers = getattr(args, "encoder_layers", 5)
+    args.encoder_attention_heads = getattr(args, "encoder_attention_heads", 4)
+
+    args.decoder_embed_dim = getattr(args, "decoder_embed_dim", 256)
+    args.decoder_ffn_embed_dim = getattr(args, "decoder_ffn_embed_dim", 256)
+    args.decoder_layers = getattr(args, "decoder_layers", 5)
+    args.decoder_attention_heads = getattr(args, "decoder_attention_heads", 4)    
+
+    base_mutual_cmlm_architecture(args)
