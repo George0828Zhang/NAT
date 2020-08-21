@@ -19,6 +19,7 @@
 # from torch.distributions.utils import probs_to_logits
 
 import pdb
+import torch
 from fairseq.models import register_model, register_model_architecture
 from fairseq.models.nat import CMLMNATransformerModel, cmlm_base_architecture
 from fairseq.models.transformer import TransformerModel, base_architecture

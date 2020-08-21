@@ -14,6 +14,8 @@ from fairseq.criterions import FairseqCriterion, register_criterion
 from torch.distributions.utils import probs_to_logits, logits_to_probs
 import pdb
 
+from fairseq.models.nat import CMLMNATransformerModel
+
 # def label_smoothed_target(logits, targets, smoothing):
 #     labels = targets.size(-1) - 1
 #     true_dist = logits.new_full(logits.size(), smoothing/labels)
@@ -99,7 +101,7 @@ class MemoryEfficientMutualLearningCriterion(FairseqCriterion):
     def _custom_loss(self, loss, name="loss", factor=1.0):
         return {"name": name, "loss": loss, "factor": factor}
 
-    def forward(self, model, sample, reduce=True):
+    def forward(self, learner, helper, sample, reduce=True):
         """Compute the loss for the given sample.
 
         Returns a tuple with three elements:
@@ -115,15 +117,6 @@ class MemoryEfficientMutualLearningCriterion(FairseqCriterion):
             sample["net_input"]["prev_output_tokens"],
         )
         tgt_tokens, nat_prev_output_tokens = sample["target"], sample["prev_target"]
-
-        
-        primary_step = model.num_updates % 2 == 0
-        if primary_step:
-            learner, helper = model, model.peer
-            learner_name = "model"
-        else:
-            learner, helper = model.peer, model
-            learner_name = "peer"
     
         helper.eval()
         learner.train() # because peer is a submodule of model, .train() comes later
@@ -131,7 +124,7 @@ class MemoryEfficientMutualLearningCriterion(FairseqCriterion):
         with torch.no_grad():
             helper_outputs = helper(
                 src_tokens, src_lengths,
-                prev_output_tokens if (primary_step and model.peer_type == "ar") else nat_prev_output_tokens,
+                nat_prev_output_tokens if isinstance(helper, CMLMNATransformerModel) else prev_output_tokens,
                 tgt_tokens
             )
             helper_logits = helper_outputs["word_ins"]["out"]
@@ -140,7 +133,7 @@ class MemoryEfficientMutualLearningCriterion(FairseqCriterion):
         """ forward learner """
         outputs = learner(
             src_tokens, src_lengths,
-            prev_output_tokens if (not primary_step and model.peer_type == "ar") else nat_prev_output_tokens,
+            nat_prev_output_tokens if isinstance(learner, CMLMNATransformerModel) else prev_output_tokens,
             tgt_tokens
         )
         learner_logits, learner_masks, smoothing = (
@@ -158,14 +151,14 @@ class MemoryEfficientMutualLearningCriterion(FairseqCriterion):
             tgt_tokens,
             learner_masks,
             smoothing,
-            name=learner_name+'-gt-loss',
+            name='gt-loss',
             factor=0.5
         )
         kd_losses = self._compute_loss(
             learner_logits,
             logits_to_probs(helper_logits).detach(),
             learner_masks,
-            name=learner_name+'-kd-loss',
+            name='kd-loss',
             factor=0.5
         )
 
@@ -177,7 +170,7 @@ class MemoryEfficientMutualLearningCriterion(FairseqCriterion):
         """ length prediction module
         length prediction loss
         """
-        if primary_step:
+        if "length" in outputs:
             length_losses = self._compute_loss(
                 outputs["length"].get("out"),
                 outputs["length"].get("tgt"),
