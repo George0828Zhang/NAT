@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-TASK=ar_base
+TASK=ar_tune
 DATA=../DATA/data-bin/iwslt16.distill.en-de
 
 mkdir -p checkpoints/$TASK
@@ -7,22 +7,24 @@ mkdir -p logdir/$TASK
 ulimit -n $(ulimit -Hn)
 export CUDA_VISIBLE_DEVICES=0
 
-fairseq-train --task translation --user-dir .. \
+fairseq-train --user-dir .. \
+    --task translation \
     -s en -t de \
-    --max-tokens 2048 \
+    --max-tokens 4096 \
     --max-tokens-valid 1024 \
     --update-freq 1 \
     --arch transformer_iwslt16 \
-    --criterion cross_entropy \
+    --criterion label_smoothed_cross_entropy \
+    --label-smoothing 0.1 \
     --optimizer adam \
     --adam-betas '(0.9, 0.98)' \
     --adam-eps 1e-9 \
     --lr-scheduler inverse_sqrt \
     --warmup-updates 746 \
-    --lr 2e-4 \
+    --lr 5e-4 \
     --clip-norm 0.0 \
     --dropout 0.1 \
-    --weight-decay 0.0 \
+    --weight-decay 0.0001 \
     --eval-bleu \
     --eval-bleu-args '{"beam": 1, "max_len_a": 1.2, "max_len_b": 10}' \
     --eval-tokenized-bleu \
