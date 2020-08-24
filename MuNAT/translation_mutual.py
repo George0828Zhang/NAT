@@ -30,23 +30,21 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
 
     # @staticmethod
     # def add_args(parser):
-    #     """Add task-specific arguments to the parser."""
-    #     # fmt: off
-    #     TranslationTask.add_args(parser)
-    #     parser.add_argument(
-    #         '--noise',
-    #         default='random_delete',
-    #         choices=['random_delete', 'random_mask', 'no_noise', 'full_mask'])        
+    #     """Add task-specific arguments to the parser."""        
+    #     TranslationLevenshteinTask.add_args(parser)    
+    #     parser.add_argument('--freeze-peer', action='store_true',
+    #             help='freeze peer network. (baseline knowledge distillation)')
 
     # def __init__(self, args, src_dict, tgt_dict):        
     #     super().__init__(args, src_dict, tgt_dict)
+    #     self.freeze_peer = getattr(args, 'freeze_peer', False)
 
     def build_generator(self, models, args, autoregressive=False):
         # add 'models' input to match the API for SequenceGenerator
         # add 'autoregressive' to have ar generator to evaluate ar student
         if autoregressive:
             ar_args = copy.deepcopy(args)
-            ar_args.beam = 4
+            ar_args.beam = 1
             ar_args.max_len_a = 1.2
             ar_args.max_len_b = 10
             return TranslationTask.build_generator(self, models, ar_args)
@@ -81,8 +79,9 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
 
             gen_args = json.loads(getattr(args, 'eval_bleu_args', '{}') or '{}')
             self.sequence_generator = self.build_generator([model], Namespace(**gen_args))
-            self.peer_sequence_generator = self.build_generator(
-                [model], Namespace(**gen_args), autoregressive=True
+            ### Added ar seq gen for bleu2 evaluation
+            self.ar_sequence_generator = self.build_generator(
+                [model.peer], Namespace(**gen_args), autoregressive=True
                 ) if model.peer_type == "ar" else self.sequence_generator
         return model
 
@@ -92,28 +91,30 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
                    criterion,
                    optimizer,
                    update_num,
-                   ignore_grad=False):
-        model.train()
+                   ignore_grad=False):        
         model.set_num_updates(update_num) # useful if model needs step number.
         sample['prev_target'] = self.inject_noise(sample['target'])
+
+        model.train()
 
         """ forward model """
         loss, sample_size, logging_output = criterion(model, model.peer, sample)
         if ignore_grad:
             loss *= 0
         optimizer.backward(loss)
-
+        
         """ forward peer """
-        peer_loss, _, peer_logging_output = criterion(model.peer, model, sample)
-        if ignore_grad:
-            peer_loss *= 0
-        optimizer.backward(peer_loss)
+        if not getattr(model, "freeze_peer", False):
+            peer_loss, _, peer_logging_output = criterion(model.peer, model, sample)
+            if ignore_grad:
+                peer_loss *= 0
+            optimizer.backward(peer_loss)
 
-        for k, v in peer_logging_output.items():
-            if k == "loss":
-                logging_output["loss"] += v
-            elif "-loss" in k:
-                logging_output["peer-"+k] = v
+            for k, v in peer_logging_output.items():
+                if k == "loss":
+                    logging_output["loss"] += v
+                elif "-loss" in k:
+                    logging_output["peer-"+k] = v
 
         return loss, sample_size, logging_output
 
@@ -121,10 +122,18 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
         model.eval()
         with torch.no_grad():
             sample['prev_target'] = self.inject_noise(sample['target'])
-            loss, sample_size, logging_output = criterion(model, sample)
+            loss, sample_size, logging_output = criterion(model, model.peer, sample)
+            peer_loss, _, peer_logging_output = criterion(model.peer, model, sample)
+            for k, v in peer_logging_output.items():
+                if k == "loss":
+                    logging_output["loss"] += v
+                elif "-loss" in k:
+                    logging_output["peer-"+k] = v
 
             if self.args.eval_bleu:
-                bleu = self._inference_with_bleu(self.sequence_generator, sample, model)
+                """ original bleu for nat model. """
+
+                bleu = self._inference_with_bleu(self.sequence_generator, sample, model, "nat example")
                 logging_output['_bleu_sys_len'] = bleu.sys_len
                 logging_output['_bleu_ref_len'] = bleu.ref_len
                 # we split counts into separate entries so that they can be
@@ -133,9 +142,21 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
                 for i in range(EVAL_BLEU_ORDER):
                     logging_output['_bleu_counts_' + str(i)] = bleu.counts[i]
                     logging_output['_bleu_totals_' + str(i)] = bleu.totals[i]
+
+                """ added bleu2 for peer model. """
+
+                bleu2 = self._inference_with_bleu(self.ar_sequence_generator, sample, model.peer, "ar example")
+                logging_output['_bleu2_sys_len'] = bleu2.sys_len
+                logging_output['_bleu2_ref_len'] = bleu2.ref_len
+                # we split counts into separate entries so that they can be
+                # summed efficiently across workers using fast-stat-sync
+                assert len(bleu2.counts) == EVAL_BLEU_ORDER
+                for i in range(EVAL_BLEU_ORDER):
+                    logging_output['_bleu2_counts_' + str(i)] = bleu2.counts[i]
+                    logging_output['_bleu2_totals_' + str(i)] = bleu2.totals[i]
         return loss, sample_size, logging_output
 
-    def _inference_with_bleu(self, generator, sample, model):
+    def _inference_with_bleu(self, generator, sample, model, print_header=None):
         import sacrebleu
 
         def decode(toks, escape_unk=False):
@@ -169,8 +190,10 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
                 escape_unk=True,  # don't count <unk> as matches to the hypo
             ))
         if self.args.eval_bleu_print_samples:
-            logger.info('example hypothesis: ' + hyps[0])
-            logger.info('example reference: ' + refs[0])
+            if print_header is not None:
+                logger.info(print_header)
+            logger.info('hypothesis: ' + hyps[0])
+            logger.info('reference: ' + refs[0])
         if self.args.eval_tokenized_bleu:
             return sacrebleu.corpus_bleu(hyps, [refs], tokenize='none')
         else:
@@ -182,6 +205,8 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
 
             def sum_logs(key):
                 return sum(log.get(key, 0) for log in logging_outputs)
+
+            """ original bleu for nat model. """
 
             counts, totals = [], []
             for i in range(EVAL_BLEU_ORDER):
@@ -213,3 +238,37 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
                     return round(bleu.score, 2)
 
                 metrics.log_derived('bleu', compute_bleu)
+
+
+            """ added bleu2 for peer model. """
+
+            counts, totals = [], []
+            for i in range(EVAL_BLEU_ORDER):
+                counts.append(sum_logs('_bleu2_counts_' + str(i)))
+                totals.append(sum_logs('_bleu2_totals_' + str(i)))
+
+            if max(totals) > 0:
+                # log counts as numpy arrays -- log_scalar will sum them correctly
+                metrics.log_scalar('_bleu2_counts', np.array(counts))
+                metrics.log_scalar('_bleu2_totals', np.array(totals))
+                metrics.log_scalar('_bleu2_sys_len', sum_logs('_bleu2_sys_len'))
+                metrics.log_scalar('_bleu2_ref_len', sum_logs('_bleu2_ref_len'))
+
+                def compute_bleu2(meters):
+                    import inspect
+                    import sacrebleu
+                    fn_sig = inspect.getfullargspec(sacrebleu.compute_bleu)[0]
+                    if 'smooth_method' in fn_sig:
+                        smooth = {'smooth_method': 'exp'}
+                    else:
+                        smooth = {'smooth': 'exp'}
+                    bleu2 = sacrebleu.compute_bleu(
+                        correct=meters['_bleu2_counts'].sum,
+                        total=meters['_bleu2_totals'].sum,
+                        sys_len=meters['_bleu2_sys_len'].sum,
+                        ref_len=meters['_bleu2_ref_len'].sum,
+                        **smooth
+                    )
+                    return round(bleu2.score, 2)
+
+                metrics.log_derived('bleu2', compute_bleu2)

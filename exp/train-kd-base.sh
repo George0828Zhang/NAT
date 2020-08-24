@@ -1,26 +1,33 @@
 #!/usr/bin/env bash
-TASK=nat_src_cpy
+TASK=kd_base
 DATA=../DATA/data-bin/iwslt16.distill.en-de
+CHECK=checkpoints/ar_base/checkpoint_best.pt
 
 mkdir -p checkpoints/$TASK
 mkdir -p logdir/$TASK
 ulimit -n $(ulimit -Hn)
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0
 
 fairseq-train --user-dir .. \
-    --task translation_lev_bleu --noise full_mask \
+    --task translation_mutual \
+    --noise full_mask \
+    --freeze-peer \
     -s en -t de \
     --max-tokens 4096 \
     --max-tokens-valid 1024 \
     --update-freq 1 \
-    --arch na_transformer_iwslt16 \
+    --arch mutual_learn_nat_iwslt16 \
+    --peer-type ar \
+    --restore-file $CHECK \
+    --reset-optimizer --reset-dataloader --reset-meters \
+    --load-peer-only \
     --src-embedding-copy \
     --apply-bert-init \
     --pred-length-offset \
     --length-loss-factor 0.1 \
     --sg-length-pred \
-    --criterion nat_loss \
-    --label-smoothing 0.1 \
+    --criterion knowledge_distillation_loss \
+    --kd-loss-factor 0.5 \
     --optimizer adam \
     --adam-betas '(0.9, 0.98)' \
     --adam-eps 1e-9 \
@@ -41,7 +48,5 @@ fairseq-train --user-dir .. \
     --num-workers 8 \
     --max-update 300000 \
     --log-format simple --log-interval 50 \
+    --fp16 \
     $DATA
-
-    # --no-epoch-checkpoints \
-    # --save-interval-updates 150 --keep-interval-updates 1 \

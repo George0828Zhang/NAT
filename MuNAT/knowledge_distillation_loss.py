@@ -14,7 +14,7 @@ from fairseq.criterions import FairseqCriterion, register_criterion
 from torch.distributions.utils import probs_to_logits, logits_to_probs
 import pdb
 
-from fairseq.models.nat import CMLMNATransformerModel
+from fairseq.models.nat import NATransformerModel
 
 # def label_smoothed_target(logits, targets, smoothing):
 #     labels = targets.size(-1) - 1
@@ -26,12 +26,14 @@ from fairseq.models.nat import CMLMNATransformerModel
 #     #     true_dist.index_fill_(0, mask.squeeze(), 0.0)
 #     return true_dist
 
-@register_criterion("memory_efficient_mutual_loss")
-class MemoryEfficientMutualLearningCriterion(FairseqCriterion):
+@register_criterion("knowledge_distillation_loss")
+class KnowledgeDistillationCriterion(FairseqCriterion):
 
-    def __init__(self, task, label_smoothing):
+    def __init__(self, task, label_smoothing, kd_loss_factor):
         super().__init__(task)
         self.label_smoothing = label_smoothing
+        self.kd_loss_factor = kd_loss_factor
+        assert 0. <= self.kd_loss_factor < 1., "factor can only be in range [0.0, 1.0)"
 
     @staticmethod
     def add_args(parser):
@@ -42,6 +44,11 @@ class MemoryEfficientMutualLearningCriterion(FairseqCriterion):
             type=float,
             metavar='D',
             help='epsilon for label smoothing, 0 means no label smoothing',
+        )
+        parser.add_argument("--kd-loss-factor", 
+            default=1.,
+            type=float,
+            help="weights on the knowledge distillation loss"
         )
 
     def _compute_loss(
@@ -101,7 +108,7 @@ class MemoryEfficientMutualLearningCriterion(FairseqCriterion):
     def _custom_loss(self, loss, name="loss", factor=1.0):
         return {"name": name, "loss": loss, "factor": factor}
 
-    def forward(self, learner, helper, sample, reduce=True):
+    def forward(self, model, target_model, sample, reduce=True):
         """Compute the loss for the given sample.
 
         Returns a tuple with three elements:
@@ -117,53 +124,50 @@ class MemoryEfficientMutualLearningCriterion(FairseqCriterion):
             sample["net_input"]["prev_output_tokens"],
         )
         tgt_tokens, nat_prev_output_tokens = sample["target"], sample["prev_target"]
-    
-        helper.eval()
-        learner.train() # because peer is a submodule of model, .train() comes later
-        """ forward helper """
+            
+        """ forward target_model """
         with torch.no_grad():
-            helper_outputs = helper(
+            target_model_outputs = target_model(
                 src_tokens, src_lengths,
-                nat_prev_output_tokens if isinstance(helper, CMLMNATransformerModel) else prev_output_tokens,
+                nat_prev_output_tokens if isinstance(target_model, NATransformerModel) else prev_output_tokens,
                 tgt_tokens
             )
-            helper_logits = helper_outputs["word_ins"]["out"]
-        helper.train() # to avoid .backward() error.
-
-        """ forward learner """
-        outputs = learner(
+            target_model_logits = target_model_outputs["word_ins"]["out"]
+        
+        """ forward model """
+        outputs = model(
             src_tokens, src_lengths,
-            nat_prev_output_tokens if isinstance(learner, CMLMNATransformerModel) else prev_output_tokens,
+            nat_prev_output_tokens if isinstance(model, NATransformerModel) else prev_output_tokens,
             tgt_tokens
         )
-        learner_logits, learner_masks, smoothing = (
+        model_logits, model_masks, smoothing = (
             outputs["word_ins"]["out"],
             outputs["word_ins"].get("mask", None),
             outputs["word_ins"].get("ls", 0.0)
         )
 
         """ model loss
-        1. label smoothed ground-truth(gt) loss
+        1. label smoothed ground-truth loss (label loss)
         2. kd loss
         """
-        gt_losses = self._compute_loss(
-            learner_logits,
+        lb_losses = self._compute_loss(
+            model_logits,
             tgt_tokens,
-            learner_masks,
+            model_masks,
             smoothing,
-            name='gt-loss',
-            factor=0.5
+            name='label-loss',
+            factor=1. - self.kd_loss_factor
         )
         kd_losses = self._compute_loss(
-            learner_logits,
-            logits_to_probs(helper_logits).detach(),
-            learner_masks,
+            model_logits,
+            logits_to_probs(target_model_logits).detach(),
+            model_masks,
             name='kd-loss',
-            factor=0.5
+            factor=self.kd_loss_factor,
         )
 
         losses = [
-            gt_losses, 
+            lb_losses, 
             kd_losses,
         ]
 

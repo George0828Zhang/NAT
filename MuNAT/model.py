@@ -1,52 +1,54 @@
-# from collections import OrderedDict
-
-# from fairseq import utils
-# from fairseq.models import (
-#     register_model, register_model_architecture, ARCH_MODEL_REGISTRY,
-#     FairseqDecoder, FairseqEncoder, BaseFairseqModel
-# )
-# from fairseq.models.transformer import (
-#     base_architecture,
-#     Embedding,
-#     DEFAULT_MAX_SOURCE_POSITIONS,
-#     DEFAULT_MAX_TARGET_POSITIONS
-# )
-# from fairseq.models.nat import CMLMNATransformerModel, cmlm_base_architecture
-
-# import torch
-# import torch.nn as nn
-# import torch.nn.functional as F
-# from torch.distributions.utils import probs_to_logits
-
 import pdb
 import torch
 from fairseq.models import register_model, register_model_architecture
-from fairseq.models.nat import CMLMNATransformerModel, cmlm_base_architecture
+# from fairseq.models.nat import CMLMNATransformerModel, cmlm_base_architecture
+from fairseq.models.nat import (
+    NATransformerModel,
+    base_architecture as nat_base_architecture,
+)
 from fairseq.models.transformer import TransformerModel, base_architecture
+import logging
 
-@register_model('mutual_cmlm')
-class CMLMMutualLearnModel(CMLMNATransformerModel):
+logger = logging.getLogger(__name__)
+
+
+def freeze_module_params(m):
+    if m is not None:
+        for p in m.parameters():
+            p.requires_grad = False
+
+@register_model('mutual_learn_nat')
+class MutualLearnNATransformerModel(NATransformerModel):
     def __init__(self, args, encoder, decoder, peer):
         super().__init__(args, encoder, decoder)
         self.peer = peer
         self.peer_type = args.peer_type
         self.register_buffer("num_updates", torch.zeros((1,), dtype=torch.int))
+        if getattr(args, 'freeze_peer', False):
+            self.freeze_peer = True
+            freeze_module_params(self.peer)
 
     def set_num_updates(self, num_updates):
         self.num_updates.fill_(num_updates)
+
     
     @staticmethod
     def add_args(parser):
         """Add model-specific arguments to the parser."""
-        CMLMNATransformerModel.add_args(parser) # assumed to be cmlm
+        NATransformerModel.add_args(parser)
         parser.add_argument('--share-encoder-embeddings', action='store_true',
                             help='share encoder embeddings across languages')
         parser.add_argument('--share-decoder-embeddings', action='store_true',
                             help='share decoder embeddings across languages')
         parser.add_argument('--share-encoders', action='store_true',
                             help='share encoders across languages')
-        parser.add_argument('--peer-type', default="ar", choices=["cmlm", "ar"],
+        parser.add_argument('--peer-type', default="ar", choices=["nat", "ar"],
                             help='determine the type of peer network to mutual learn from.')
+        parser.add_argument('--load-peer-only', action='store_true',
+                            help='only load peer network.')
+        parser.add_argument('--freeze-peer', action='store_true',
+                help='freeze peer(teacher) network. (baseline knowledge distillation)')
+                            
 
     @classmethod
     def build_model(cls, args, task):
@@ -56,12 +58,12 @@ class CMLMMutualLearnModel(CMLMNATransformerModel):
 
         # make sure all arguments are present in older models
         base_architecture(args)
-        base_mutual_cmlm_architecture(args) # assumed to be cmlm
+        base_mutual_learn_nat_architecture(args) # assumed to be nat
 
         if args.share_encoders:
             args.share_encoder_embeddings = True
                 
-        ### cmlm model
+        ### nat model
         # build shared embeddings (if applicable)
         src_dict, tgt_dict = task.source_dictionary, task.target_dictionary
         if args.share_all_embeddings:
@@ -94,8 +96,8 @@ class CMLMMutualLearnModel(CMLMNATransformerModel):
         decoder = cls.build_decoder(args, tgt_dict, decoder_embed_tokens)
 
         ### peer model
-        if args.peer_type == "cmlm":
-            peer_cls = CMLMNATransformerModel
+        if args.peer_type == "nat":
+            peer_cls = NATransformerModel
         else:
             peer_cls = PeerTransformerModel
         
@@ -114,6 +116,26 @@ class CMLMMutualLearnModel(CMLMNATransformerModel):
         peer = peer_cls(args,peer_encoder,peer_decoder)
 
         return cls(args, encoder, decoder, peer)
+
+    def load_state_dict(self, state_dict, strict=True, args=None):
+        """Copies parameters and buffers from *state_dict* into this module and
+        its descendants.
+
+        Overrides the method in :class:`nn.Module`. Compared with that method
+        this additionally "upgrades" *state_dicts* from old checkpoints.
+        """
+        
+        """Overrides fairseq_model.py
+
+        """
+        if getattr(args, "load_peer_only", False):
+            logger.warning("Will only load peer weights!")
+            cur = self.state_dict()
+            for k, v in state_dict.items():
+                cur["peer." + k] = v
+            state_dict = cur
+
+        return super().load_state_dict(state_dict, strict=strict, args=args)
 
 
 class PeerTransformerModel(TransformerModel):
@@ -135,27 +157,42 @@ class PeerTransformerModel(TransformerModel):
         }
 
 
-@register_model_architecture('mutual_cmlm', 'mutual_cmlm')
-def base_mutual_cmlm_architecture(args):
-    cmlm_base_architecture(args)
+@register_model_architecture('mutual_learn_nat', 'mutual_learn_nat')
+def base_mutual_learn_nat_architecture(args):
+    nat_base_architecture(args)
     args.share_encoder_embeddings = getattr(args, 'share_encoder_embeddings', False)
     args.share_decoder_embeddings = getattr(args, 'share_decoder_embeddings', False)
     args.share_encoders = getattr(args, 'share_encoders', False)
     args.peer_type = getattr(args, 'peer_type', "ar")
 
 
-
-@register_model_architecture('mutual_cmlm', 'mutual_cmlm_small')
-def small_mutual_cmlm_architecture(args):
-    
-    args.encoder_embed_dim = getattr(args, "encoder_embed_dim", 256)
-    args.encoder_ffn_embed_dim = getattr(args, "encoder_ffn_embed_dim", 256)
+@register_model_architecture(
+    "mutual_learn_nat", "mutual_learn_nat_iwslt16"
+)
+def mutual_learn_nat_iwslt_16(args):
+    args.encoder_embed_dim = getattr(args, "encoder_embed_dim", 278)
+    args.encoder_ffn_embed_dim = getattr(args, "encoder_ffn_embed_dim", 507)
     args.encoder_layers = getattr(args, "encoder_layers", 5)
-    args.encoder_attention_heads = getattr(args, "encoder_attention_heads", 4)
+    args.encoder_attention_heads = getattr(args, "encoder_attention_heads", 2)
 
-    args.decoder_embed_dim = getattr(args, "decoder_embed_dim", 256)
-    args.decoder_ffn_embed_dim = getattr(args, "decoder_ffn_embed_dim", 256)
+    args.decoder_embed_dim = getattr(args, "decoder_embed_dim", 278)
+    args.decoder_ffn_embed_dim = getattr(args, "decoder_ffn_embed_dim", 507)
     args.decoder_layers = getattr(args, "decoder_layers", 5)
-    args.decoder_attention_heads = getattr(args, "decoder_attention_heads", 4)    
+    args.decoder_attention_heads = getattr(args, "decoder_attention_heads", 2)
+    
+    base_mutual_learn_nat_architecture(args)
 
-    base_mutual_cmlm_architecture(args)
+# @register_model_architecture('mutual_learn_nat', 'mutual_learn_nat_iwslt14')
+# def iwslt14_mutual_learn_nat_architecture(args):
+    
+#     args.encoder_embed_dim = getattr(args, "encoder_embed_dim", 256)
+#     args.encoder_ffn_embed_dim = getattr(args, "encoder_ffn_embed_dim", 256)
+#     args.encoder_layers = getattr(args, "encoder_layers", 5)
+#     args.encoder_attention_heads = getattr(args, "encoder_attention_heads", 4)
+
+#     args.decoder_embed_dim = getattr(args, "decoder_embed_dim", 256)
+#     args.decoder_ffn_embed_dim = getattr(args, "decoder_ffn_embed_dim", 256)
+#     args.decoder_layers = getattr(args, "decoder_layers", 5)
+#     args.decoder_attention_heads = getattr(args, "decoder_attention_heads", 4)
+
+#     base_mutual_learn_nat_architecture(args)
