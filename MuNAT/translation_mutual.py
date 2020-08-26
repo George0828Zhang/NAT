@@ -28,16 +28,25 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
     See `"Levenshtein Transformer" <https://arxiv.org/abs/1905.11006>`_.
     """
 
-    # @staticmethod
-    # def add_args(parser):
-    #     """Add task-specific arguments to the parser."""        
-    #     TranslationLevenshteinTask.add_args(parser)    
-    #     parser.add_argument('--freeze-peer', action='store_true',
-    #             help='freeze peer network. (baseline knowledge distillation)')
+    @staticmethod
+    def add_args(parser):
+        """Add task-specific arguments to the parser."""        
+        TranslationLevenshteinTask.add_args(parser)    
+        parser.add_argument("--student-kd-factor", 
+            default=.5,
+            type=float,
+            help="weights on the knowledge distillation loss for training student"
+        )
+        parser.add_argument("--teacher-kd-factor", 
+            default=.5,
+            type=float,
+            help="weights on the knowledge distillation loss for training teacher"
+        )
 
-    # def __init__(self, args, src_dict, tgt_dict):        
-    #     super().__init__(args, src_dict, tgt_dict)
-    #     self.freeze_peer = getattr(args, 'freeze_peer', False)
+    def __init__(self, args, src_dict, tgt_dict):        
+        super().__init__(args, src_dict, tgt_dict)
+        self.student_kd_factor = getattr(args, 'student_kd_factor', 0.5)
+        self.teacher_kd_factor = getattr(args, 'teacher_kd_factor', 0.5)
 
     def build_generator(self, models, args, autoregressive=False):
         # add 'models' input to match the API for SequenceGenerator
@@ -62,7 +71,7 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
 
     def build_model(self, args):
         """
-        Add another generator for autoregressive peer.
+        Add another generator for autoregressive teacher.
         """
         model = super().build_model(args)
         if getattr(args, 'eval_bleu', False):
@@ -78,11 +87,11 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
             ))
 
             gen_args = json.loads(getattr(args, 'eval_bleu_args', '{}') or '{}')
-            self.sequence_generator = self.build_generator([model], Namespace(**gen_args))
+            self.sequence_generator = self.build_generator([model.student], Namespace(**gen_args))
             ### Added ar seq gen for bleu2 evaluation
             self.ar_sequence_generator = self.build_generator(
-                [model.peer], Namespace(**gen_args), autoregressive=True
-                ) if model.peer_type == "ar" else self.sequence_generator
+                [model.teacher], Namespace(**gen_args), autoregressive=True
+                ) if model.teacher_is_ar else self.sequence_generator
         return model
 
     def train_step(self,
@@ -91,30 +100,33 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
                    criterion,
                    optimizer,
                    update_num,
-                   ignore_grad=False):        
-        model.set_num_updates(update_num) # useful if model needs step number.
+                   ignore_grad=False):
         sample['prev_target'] = self.inject_noise(sample['target'])
 
-        model.train()
+        student, teacher = model.student, model.teacher
 
         """ forward model """
-        loss, sample_size, logging_output = criterion(model, model.peer, sample)
+        student.train()
+        teacher.eval()
+        loss, sample_size, logging_output = criterion(student, teacher, sample, kd_factor=self.student_kd_factor)
         if ignore_grad:
             loss *= 0
         optimizer.backward(loss)
         
-        """ forward peer """
-        if not getattr(model, "freeze_peer", False):
-            peer_loss, _, peer_logging_output = criterion(model.peer, model, sample)
+        """ forward teacher """
+        if getattr(model, "teacher_objective", "kd"):
+            teacher.train()
+            student.eval()
+            teacher_loss, _, teacher_logging_output = criterion(teacher, student, sample, kd_factor=self.teacher_kd_factor)
             if ignore_grad:
-                peer_loss *= 0
-            optimizer.backward(peer_loss)
+                teacher_loss *= 0
+            optimizer.backward(teacher_loss)
 
-            for k, v in peer_logging_output.items():
+            for k, v in teacher_logging_output.items():
                 if k == "loss":
                     logging_output["loss"] += v
                 elif "-loss" in k:
-                    logging_output["peer-"+k] = v
+                    logging_output["teacher-"+k] = v
 
         return loss, sample_size, logging_output
 
@@ -122,18 +134,18 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
         model.eval()
         with torch.no_grad():
             sample['prev_target'] = self.inject_noise(sample['target'])
-            loss, sample_size, logging_output = criterion(model, model.peer, sample)
-            peer_loss, _, peer_logging_output = criterion(model.peer, model, sample)
-            for k, v in peer_logging_output.items():
+            loss, sample_size, logging_output = criterion(model.student, model.teacher, sample, kd_factor=self.student_kd_factor)
+            _, _, teacher_logging_output = criterion(model.teacher, model.student, sample, kd_factor=self.teacher_kd_factor)
+            for k, v in teacher_logging_output.items():
                 if k == "loss":
                     logging_output["loss"] += v
                 elif "-loss" in k:
-                    logging_output["peer-"+k] = v
+                    logging_output["teacher-"+k] = v
 
             if self.args.eval_bleu:
                 """ original bleu for nat model. """
 
-                bleu = self._inference_with_bleu(self.sequence_generator, sample, model, "nat example")
+                bleu = self._inference_with_bleu(self.sequence_generator, sample, model.student, "nat example")
                 logging_output['_bleu_sys_len'] = bleu.sys_len
                 logging_output['_bleu_ref_len'] = bleu.ref_len
                 # we split counts into separate entries so that they can be
@@ -143,9 +155,9 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
                     logging_output['_bleu_counts_' + str(i)] = bleu.counts[i]
                     logging_output['_bleu_totals_' + str(i)] = bleu.totals[i]
 
-                """ added bleu2 for peer model. """
+                """ added bleu2 for teacher model. """
 
-                bleu2 = self._inference_with_bleu(self.ar_sequence_generator, sample, model.peer, "ar example")
+                bleu2 = self._inference_with_bleu(self.ar_sequence_generator, sample, model.teacher, "ar example")
                 logging_output['_bleu2_sys_len'] = bleu2.sys_len
                 logging_output['_bleu2_ref_len'] = bleu2.ref_len
                 # we split counts into separate entries so that they can be
@@ -240,7 +252,7 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
                 metrics.log_derived('bleu', compute_bleu)
 
 
-            """ added bleu2 for peer model. """
+            """ added bleu2 for teacher model. """
 
             counts, totals = [], []
             for i in range(EVAL_BLEU_ORDER):

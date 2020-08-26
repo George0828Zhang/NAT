@@ -29,11 +29,9 @@ from fairseq.models.nat import NATransformerModel
 @register_criterion("knowledge_distillation_loss")
 class KnowledgeDistillationCriterion(FairseqCriterion):
 
-    def __init__(self, task, label_smoothing, kd_loss_factor):
+    def __init__(self, task, label_smoothing):
         super().__init__(task)
         self.label_smoothing = label_smoothing
-        self.kd_loss_factor = kd_loss_factor
-        assert 0. <= self.kd_loss_factor < 1., "factor can only be in range [0.0, 1.0)"
 
     @staticmethod
     def add_args(parser):
@@ -44,11 +42,6 @@ class KnowledgeDistillationCriterion(FairseqCriterion):
             type=float,
             metavar='D',
             help='epsilon for label smoothing, 0 means no label smoothing',
-        )
-        parser.add_argument("--kd-loss-factor", 
-            default=1.,
-            type=float,
-            help="weights on the knowledge distillation loss"
         )
 
     def _compute_loss(
@@ -108,7 +101,7 @@ class KnowledgeDistillationCriterion(FairseqCriterion):
     def _custom_loss(self, loss, name="loss", factor=1.0):
         return {"name": name, "loss": loss, "factor": factor}
 
-    def forward(self, model, target_model, sample, reduce=True):
+    def forward(self, model, target_model, sample, reduce=True, kd_factor=0.5):
         """Compute the loss for the given sample.
 
         Returns a tuple with three elements:
@@ -156,14 +149,14 @@ class KnowledgeDistillationCriterion(FairseqCriterion):
             model_masks,
             smoothing,
             name='label-loss',
-            factor=1. - self.kd_loss_factor
+            factor=1. - kd_factor
         )
         kd_losses = self._compute_loss(
             model_logits,
             logits_to_probs(target_model_logits).detach(),
             model_masks,
             name='kd-loss',
-            factor=self.kd_loss_factor,
+            factor=kd_factor,
         )
 
         losses = [

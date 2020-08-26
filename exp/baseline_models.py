@@ -2,9 +2,11 @@ from fairseq.models import register_model, register_model_architecture
 from fairseq.models.transformer import (
     base_architecture as transformer_base_architecture,
 )
-from fairseq.models.nat.nonautoregressive_transformer import (
+from fairseq.models.nat import (
     NATransformerModel,
     base_architecture as nonautoregressive_transformer_base_architecture,
+    CMLMNATransformerModel,
+    cmlm_base_architecture
 )
 import re
 import pdb
@@ -68,3 +70,10 @@ def nonautoregressive_transformer_iwslt_16(args):
 def transformer_iwslt_16(args):
     for_iwslt_16(args)
     transformer_base_architecture(args)
+
+@register_model_architecture(
+    "cmlm_transformer", "cmlm_transformer_iwslt16"
+)
+def cmlm_transformer_iwslt_16(args):
+    for_iwslt_16(args)
+    cmlm_base_architecture(args)

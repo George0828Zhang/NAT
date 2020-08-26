@@ -1,7 +1,11 @@
 import pdb
 import torch
-from fairseq.models import register_model, register_model_architecture
-# from fairseq.models.nat import CMLMNATransformerModel, cmlm_base_architecture
+from fairseq.models import (
+    register_model, 
+    register_model_architecture, 
+    BaseFairseqModel,
+    ARCH_MODEL_REGISTRY, ARCH_CONFIG_REGISTRY
+)
 from fairseq.models.nat import (
     NATransformerModel,
     base_architecture as nat_base_architecture,
@@ -18,19 +22,15 @@ def freeze_module_params(m):
             p.requires_grad = False
 
 @register_model('mutual_learn_nat')
-class MutualLearnNATransformerModel(NATransformerModel):
-    def __init__(self, args, encoder, decoder, peer):
-        super().__init__(args, encoder, decoder)
-        self.peer = peer
-        self.peer_type = args.peer_type
-        self.register_buffer("num_updates", torch.zeros((1,), dtype=torch.int))
-        if getattr(args, 'freeze_peer', False):
-            self.freeze_peer = True
-            freeze_module_params(self.peer)
-
-    def set_num_updates(self, num_updates):
-        self.num_updates.fill_(num_updates)
-
+class MutualLearnNATransformerModel(BaseFairseqModel):
+    def __init__(self, args, student, teacher):
+        super().__init__()
+        self.student = student
+        self.teacher = teacher        
+        self.teacher_is_ar = not isinstance(teacher, NATransformerModel)
+        self.teacher_objective = args.teacher_objective
+        if self.teacher_objective == "freeze":
+            freeze_module_params(self.teacher)
     
     @staticmethod
     def add_args(parser):
@@ -42,12 +42,14 @@ class MutualLearnNATransformerModel(NATransformerModel):
                             help='share decoder embeddings across languages')
         parser.add_argument('--share-encoders', action='store_true',
                             help='share encoders across languages')
-        parser.add_argument('--peer-type', default="ar", choices=["nat", "ar"],
-                            help='determine the type of peer network to mutual learn from.')
-        parser.add_argument('--load-peer-only', action='store_true',
-                            help='only load peer network.')
-        parser.add_argument('--freeze-peer', action='store_true',
-                help='freeze peer(teacher) network. (baseline knowledge distillation)')
+        parser.add_argument('--student-arch', default="nonautoregressive_transformer",
+                            help='determine the type of student network to mutual learn from.')        
+        parser.add_argument('--teacher-arch', default="transformer",
+                            help='determine the type of teacher network to mutual learn from.')
+        parser.add_argument('--load-teacher-only', action='store_true',
+                            help='only load teacher network.')
+        parser.add_argument('--teacher-objective', default="kd", choices=["freeze", "kd", "mle"],
+                help='how to update teacher.')
                             
 
     @classmethod
@@ -79,43 +81,44 @@ class MutualLearnNATransformerModel(NATransformerModel):
                 raise ValueError(
                     "--share-all-embeddings not compatible with --decoder-embed-path"
                 )
-            encoder_embed_tokens = cls.build_embedding(
+            encoder_embed_tokens = TransformerModel.build_embedding(
                 args, src_dict, args.encoder_embed_dim, args.encoder_embed_path
             )
             decoder_embed_tokens = encoder_embed_tokens
             args.share_decoder_input_output_embed = True
         else:
-            encoder_embed_tokens = cls.build_embedding(
+            encoder_embed_tokens = TransformerModel.build_embedding(
                 args, src_dict, args.encoder_embed_dim, args.encoder_embed_path
             )
-            decoder_embed_tokens = cls.build_embedding(
+            decoder_embed_tokens = TransformerModel.build_embedding(
                 args, tgt_dict, args.decoder_embed_dim, args.decoder_embed_path
             )
 
-        encoder = cls.build_encoder(args, src_dict, encoder_embed_tokens)
-        decoder = cls.build_decoder(args, tgt_dict, decoder_embed_tokens)
 
-        ### peer model
-        if args.peer_type == "nat":
-            peer_cls = NATransformerModel
-        else:
-            peer_cls = PeerTransformerModel
+        student_cls = ARCH_MODEL_REGISTRY[args.student_arch]
+        encoder = student_cls.build_encoder(args, src_dict, encoder_embed_tokens)
+        decoder = student_cls.build_decoder(args, tgt_dict, decoder_embed_tokens)
+        student = student_cls(args,encoder,decoder)
+
+        teacher_cls = ARCH_MODEL_REGISTRY[args.teacher_arch]
+        if not issubclass(teacher_cls, NATransformerModel):
+            teacher_cls = PatchedTransformerModel
         
-        peer_encoder = peer_cls.build_encoder(
+        teacher_encoder = teacher_cls.build_encoder(
             args, src_dict, 
-            encoder_embed_tokens if args.share_encoder_embeddings else cls.build_embedding(
+            encoder_embed_tokens if args.share_encoder_embeddings else TransformerModel.build_embedding(
                 args, src_dict, args.encoder_embed_dim, args.encoder_embed_path
                 )
             )
-        peer_decoder = peer_cls.build_decoder(
+        teacher_decoder = teacher_cls.build_decoder(
             args, tgt_dict, 
-            decoder_embed_tokens if args.share_decoder_embeddings else cls.build_embedding(
+            decoder_embed_tokens if args.share_decoder_embeddings else TransformerModel.build_embedding(
                 args, tgt_dict, args.decoder_embed_dim, args.decoder_embed_path
                 )
             )
-        peer = peer_cls(args,peer_encoder,peer_decoder)
+        teacher = teacher_cls(args,teacher_encoder,teacher_decoder)
 
-        return cls(args, encoder, decoder, peer)
+        return cls(args, student, teacher)
 
     def load_state_dict(self, state_dict, strict=True, args=None):
         """Copies parameters and buffers from *state_dict* into this module and
@@ -128,17 +131,17 @@ class MutualLearnNATransformerModel(NATransformerModel):
         """Overrides fairseq_model.py
 
         """
-        if getattr(args, "load_peer_only", False):
-            logger.warning("Will only load peer weights!")
+        if getattr(args, "load_teacher_only", False):
+            logger.warning("Will only load teacher weights!")
             cur = self.state_dict()
             for k, v in state_dict.items():
-                cur["peer." + k] = v
+                cur["teacher." + k] = v
             state_dict = cur
 
         return super().load_state_dict(state_dict, strict=strict, args=args)
 
 
-class PeerTransformerModel(TransformerModel):
+class PatchedTransformerModel(TransformerModel):
     """
     This makes criterion a whole lot easier.
     """
@@ -163,7 +166,7 @@ def base_mutual_learn_nat_architecture(args):
     args.share_encoder_embeddings = getattr(args, 'share_encoder_embeddings', False)
     args.share_decoder_embeddings = getattr(args, 'share_decoder_embeddings', False)
     args.share_encoders = getattr(args, 'share_encoders', False)
-    args.peer_type = getattr(args, 'peer_type', "ar")
+    args.teacher_arch = getattr(args, 'teacher_arch', "transformer")
 
 
 @register_model_architecture(
@@ -181,18 +184,3 @@ def mutual_learn_nat_iwslt_16(args):
     args.decoder_attention_heads = getattr(args, "decoder_attention_heads", 2)
     
     base_mutual_learn_nat_architecture(args)
-
-# @register_model_architecture('mutual_learn_nat', 'mutual_learn_nat_iwslt14')
-# def iwslt14_mutual_learn_nat_architecture(args):
-    
-#     args.encoder_embed_dim = getattr(args, "encoder_embed_dim", 256)
-#     args.encoder_ffn_embed_dim = getattr(args, "encoder_ffn_embed_dim", 256)
-#     args.encoder_layers = getattr(args, "encoder_layers", 5)
-#     args.encoder_attention_heads = getattr(args, "encoder_attention_heads", 4)
-
-#     args.decoder_embed_dim = getattr(args, "decoder_embed_dim", 256)
-#     args.decoder_ffn_embed_dim = getattr(args, "decoder_ffn_embed_dim", 256)
-#     args.decoder_layers = getattr(args, "decoder_layers", 5)
-#     args.decoder_attention_heads = getattr(args, "decoder_attention_heads", 4)
-
-#     base_mutual_learn_nat_architecture(args)
