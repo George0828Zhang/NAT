@@ -16,22 +16,21 @@ import pdb
 
 from fairseq.models.nat import NATransformerModel
 
-# def label_smoothed_target(logits, targets, smoothing):
-#     labels = targets.size(-1) - 1
-#     true_dist = logits.new_full(logits.size(), smoothing/labels)
-#     true_dist.scatter_(1, targets.unsqueeze(1), 1. - smoothing)
-#     # true_dist[:, self.padding_idx] = 0
-#     # mask = torch.nonzero(target.data == self.padding_idx)
-#     # if mask.dim() > 0:
-#     #     true_dist.index_fill_(0, mask.squeeze(), 0.0)
-#     return true_dist
+def top_k_kl_div(logits, targets, k, reduction='none'):
+    if k != -1:
+        values, indices = torch.topk(targets.to(logits.device), k, dim=-1)
+        logits = torch.gather(logits, -1, indices)
+        targets = F.normalize(values, p=1, dim=-1)
+    return F.kl_div(logits, targets, reduction=reduction)
 
 @register_criterion("knowledge_distillation_loss")
 class KnowledgeDistillationCriterion(FairseqCriterion):
 
-    def __init__(self, task, label_smoothing):
+    def __init__(self, task, label_smoothing, distill_top_k):
         super().__init__(task)
         self.label_smoothing = label_smoothing
+        self.distill_top_k = distill_top_k
+        assert self.distill_top_k==-1 or self.distill_top_k > 0, 'top K need to be -1 or >0'
 
     @staticmethod
     def add_args(parser):
@@ -42,6 +41,13 @@ class KnowledgeDistillationCriterion(FairseqCriterion):
             type=float,
             metavar='D',
             help='epsilon for label smoothing, 0 means no label smoothing',
+        )
+        parser.add_argument(
+            '--distill-top-k',
+            default=-1,
+            type=int,
+            metavar='K',
+            help='distill the top K log probabilities only. -1 to compute full distillation.',
         )
 
     def _compute_loss(
@@ -81,8 +87,7 @@ class KnowledgeDistillationCriterion(FairseqCriterion):
             logits = F.log_softmax(outputs, dim=-1)            
 
             if soft:  # soft-labels
-                losses = F.kl_div(logits, targets.to(
-                    logits.device), reduction='none')
+                losses = top_k_kl_div(logits, targets, k=self.distill_top_k, reduction='none')
                 losses = losses.sum(-1)
             else:
                 losses = F.nll_loss(logits, targets.to(
