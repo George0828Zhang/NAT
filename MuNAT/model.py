@@ -28,8 +28,8 @@ class MutualLearnNATransformerModel(BaseFairseqModel):
         self.student = student
         self.teacher = teacher        
         self.teacher_is_ar = not isinstance(teacher, NATransformerModel)
-        self.teacher_objective = args.teacher_objective
-        if self.teacher_objective == "freeze":
+        self.freeze_teacher = getattr(args, "freeze_teacher", False)
+        if self.freeze_teacher == "freeze":
             freeze_module_params(self.teacher)
     
     @staticmethod
@@ -48,8 +48,8 @@ class MutualLearnNATransformerModel(BaseFairseqModel):
                             help='determine the type of teacher network to mutual learn from.')
         parser.add_argument('--load-teacher-only', action='store_true',
                             help='only load teacher network.')
-        parser.add_argument('--teacher-objective', default="kd", choices=["freeze", "kd", "mle"],
-                help='how to update teacher.')
+        parser.add_argument('--freeze-teacher', action='store_true',
+                help='whether to freeze teacher.')
                             
 
     @classmethod

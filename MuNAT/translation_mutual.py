@@ -114,7 +114,7 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
         optimizer.backward(loss)
         
         """ forward teacher """
-        if getattr(model, "teacher_objective", "kd"):
+        if not getattr(model, "freeze_teacher", False):
             teacher.train()
             student.eval()
             teacher_loss, _, teacher_logging_output = criterion(teacher, student, sample, kd_factor=self.teacher_kd_factor)
