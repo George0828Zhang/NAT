@@ -3,12 +3,10 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import os
-import json
-import numpy as np
-import copy
-import torch
+import logging
 from argparse import Namespace
+import torch
+
 from fairseq.data import (
     encoders,
     LanguagePairDataset,
@@ -18,7 +16,8 @@ from fairseq.tasks import register_task
 from fairseq.tasks.translation import TranslationTask, load_langpair_dataset, EVAL_BLEU_ORDER
 from fairseq.tasks.translation_lev import TranslationLevenshteinTask
 from fairseq import utils, metrics
-import logging
+
+import numpy as np
 logger = logging.getLogger(__name__)
 
 @register_task('translation_mutual')
@@ -45,29 +44,8 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
 
     def __init__(self, args, src_dict, tgt_dict):        
         super().__init__(args, src_dict, tgt_dict)
-        self.student_kd_factor = getattr(args, 'student_kd_factor', 0.5)
-        self.teacher_kd_factor = getattr(args, 'teacher_kd_factor', 0.5)
-
-    def build_generator(self, models, args, autoregressive=False):
-        # add 'models' input to match the API for SequenceGenerator
-        # add 'autoregressive' to have ar generator to evaluate ar student
-        if autoregressive:
-            ar_args = copy.deepcopy(args)
-            ar_args.beam = 1
-            ar_args.max_len_a = 1.2
-            ar_args.max_len_b = 10
-            return TranslationTask.build_generator(self, models, ar_args)
-
-        from fairseq.iterative_refinement_generator import IterativeRefinementGenerator
-        return IterativeRefinementGenerator(
-            self.target_dictionary,
-            eos_penalty=getattr(args, 'iter_decode_eos_penalty', 0.0),
-            max_iter=getattr(args, 'iter_decode_max_iter', 10),
-            beam_size=getattr(args, 'iter_decode_with_beam', 1),
-            reranking=getattr(args, 'iter_decode_with_external_reranker', False),
-            decoding_format=getattr(args, 'decoding_format', None),
-            adaptive=not getattr(args, 'iter_decode_force_max_iter', False),
-            retain_history=getattr(args, 'retain_iter_history', False))
+        self.student_kd_factor = args.student_kd_factor
+        self.teacher_kd_factor = args.teacher_kd_factor
 
     def build_model(self, args):
         """
@@ -75,24 +53,19 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
         """
         model = super().build_model(args)
         if getattr(args, 'eval_bleu', False):
-            assert getattr(args, 'eval_bleu_detok', None) is not None, (
-                '--eval-bleu-detok is required if using --eval-bleu; '
-                'try --eval-bleu-detok=moses (or --eval-bleu-detok=space '
-                'to disable detokenization, e.g., when using sentencepiece)'
-            )
-            detok_args = json.loads(getattr(args, 'eval_bleu_detok_args', '{}') or '{}')
-            self.tokenizer = encoders.build_tokenizer(Namespace(
-                tokenizer=getattr(args, 'eval_bleu_detok', None),
-                **detok_args
-            ))
-
-            gen_args = json.loads(getattr(args, 'eval_bleu_args', '{}') or '{}')
-            self.sequence_generator = self.build_generator([model.student], Namespace(**gen_args))
-            ### Added ar seq gen for bleu2 evaluation
-            self.ar_sequence_generator = self.build_generator(
-                [model.teacher], Namespace(**gen_args), autoregressive=True
-                ) if model.teacher_is_ar else self.sequence_generator
+            ### Added ar seq gen for bleu2 evaluation            
+            gen_args = {"beam": 1, "max_len_a": 1.2, "max_len_b": 10}
+            self.ar_sequence_generator = TranslationTask.build_generator(
+                self,
+                [model.teacher],
+                Namespace(**gen_args)
+            ) if model.teacher_is_ar else self.sequence_generator
         return model
+
+    def inference_step(self, generator, models, sample, prefix_tokens=None, eval_teacher=False):
+        models = [getattr(m, "teacher" if eval_teacher else "student", m) for m in models]
+        with torch.no_grad():
+            return generator.generate(models, sample, prefix_tokens=prefix_tokens)
 
     def train_step(self,
                    sample,
@@ -132,10 +105,11 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
 
     def valid_step(self, sample, model, criterion):
         model.eval()
+        student, teacher = model.student, model.teacher
         with torch.no_grad():
             sample['prev_target'] = self.inject_noise(sample['target'])
-            loss, sample_size, logging_output = criterion(model.student, model.teacher, sample, kd_factor=self.student_kd_factor)
-            _, _, teacher_logging_output = criterion(model.teacher, model.student, sample, kd_factor=self.teacher_kd_factor)
+            loss, sample_size, logging_output = criterion(student, teacher, sample, kd_factor=self.student_kd_factor)
+            _, _, teacher_logging_output = criterion(teacher, student, sample, kd_factor=self.teacher_kd_factor)
             for k, v in teacher_logging_output.items():
                 if k == "loss":
                     logging_output["loss"] += v
@@ -145,7 +119,7 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
             if self.args.eval_bleu:
                 """ original bleu for nat model. """
 
-                bleu = self._inference_with_bleu(self.sequence_generator, sample, model.student, "nat example")
+                bleu = self._inference_with_bleu(self.sequence_generator, sample, student)
                 logging_output['_bleu_sys_len'] = bleu.sys_len
                 logging_output['_bleu_ref_len'] = bleu.ref_len
                 # we split counts into separate entries so that they can be
@@ -157,7 +131,7 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
 
                 """ added bleu2 for teacher model. """
 
-                bleu2 = self._inference_with_bleu(self.ar_sequence_generator, sample, model.teacher, "ar example")
+                bleu2 = self._inference_with_bleu(self.ar_sequence_generator, sample, teacher, eval_teacher=True)
                 logging_output['_bleu2_sys_len'] = bleu2.sys_len
                 logging_output['_bleu2_ref_len'] = bleu2.ref_len
                 # we split counts into separate entries so that they can be
@@ -168,7 +142,7 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
                     logging_output['_bleu2_totals_' + str(i)] = bleu2.totals[i]
         return loss, sample_size, logging_output
 
-    def _inference_with_bleu(self, generator, sample, model, print_header=None):
+    def _inference_with_bleu(self, generator, sample, model, eval_teacher=False):
         import sacrebleu
 
         def decode(toks, escape_unk=False):
@@ -193,7 +167,7 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
                 s = self.tokenizer.decode(s)
             return s if s else "UNKNOWNTOKENINREF"
 
-        gen_out = self.inference_step(generator, [model], sample, None)
+        gen_out = self.inference_step(generator, [model], sample, None, eval_teacher=eval_teacher)
         hyps, refs = [], []
         for i in range(len(gen_out)):
             hyps.append(decode(gen_out[i][0]['tokens']))
@@ -202,8 +176,7 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
                 escape_unk=True,  # don't count <unk> as matches to the hypo
             ))
         if self.args.eval_bleu_print_samples:
-            if print_header is not None:
-                logger.info(print_header)
+            logger.info("teacher example" if eval_teacher else "student example")
             logger.info('hypothesis: ' + hyps[0])
             logger.info('reference: ' + refs[0])
         if self.args.eval_tokenized_bleu:

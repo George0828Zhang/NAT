@@ -26,12 +26,12 @@ class MutualLearnNATransformerModel(BaseFairseqModel):
     def __init__(self, args, student, teacher):
         super().__init__()
         self.student = student
-        self.teacher = teacher        
+        self.teacher = teacher
         self.teacher_is_ar = not isinstance(teacher, NATransformerModel)
         self.freeze_teacher = getattr(args, "freeze_teacher", False)
         if self.freeze_teacher == "freeze":
             freeze_module_params(self.teacher)
-    
+
     @staticmethod
     def add_args(parser):
         """Add model-specific arguments to the parser."""
@@ -60,11 +60,10 @@ class MutualLearnNATransformerModel(BaseFairseqModel):
 
         # make sure all arguments are present in older models
         base_architecture(args)
-        base_mutual_learn_nat_architecture(args) # assumed to be nat
 
         if args.share_encoders:
             args.share_encoder_embeddings = True
-                
+
         ### nat model
         # build shared embeddings (if applicable)
         src_dict, tgt_dict = task.source_dictionary, task.target_dictionary
@@ -103,15 +102,15 @@ class MutualLearnNATransformerModel(BaseFairseqModel):
         teacher_cls = ARCH_MODEL_REGISTRY[args.teacher_arch]
         if not issubclass(teacher_cls, NATransformerModel):
             teacher_cls = PatchedTransformerModel
-        
+
         teacher_encoder = teacher_cls.build_encoder(
-            args, src_dict, 
+            args, src_dict,
             encoder_embed_tokens if args.share_encoder_embeddings else TransformerModel.build_embedding(
                 args, src_dict, args.encoder_embed_dim, args.encoder_embed_path
                 )
             )
         teacher_decoder = teacher_cls.build_decoder(
-            args, tgt_dict, 
+            args, tgt_dict,
             decoder_embed_tokens if args.share_decoder_embeddings else TransformerModel.build_embedding(
                 args, tgt_dict, args.decoder_embed_dim, args.decoder_embed_path
                 )
@@ -120,6 +119,14 @@ class MutualLearnNATransformerModel(BaseFairseqModel):
 
         return cls(args, student, teacher)
 
+    ##################################
+    # some functions to avoid errors #
+    ##################################
+
+    def max_positions(self):
+        """Maximum length supported by the model."""
+        return self.student.max_positions()
+
     def load_state_dict(self, state_dict, strict=True, args=None):
         """Copies parameters and buffers from *state_dict* into this module and
         its descendants.
@@ -127,7 +134,7 @@ class MutualLearnNATransformerModel(BaseFairseqModel):
         Overrides the method in :class:`nn.Module`. Compared with that method
         this additionally "upgrades" *state_dicts* from old checkpoints.
         """
-        
+
         """Overrides fairseq_model.py
 
         """
@@ -162,25 +169,31 @@ class PatchedTransformerModel(TransformerModel):
 
 @register_model_architecture('mutual_learn_nat', 'mutual_learn_nat')
 def base_mutual_learn_nat_architecture(args):
-    nat_base_architecture(args)
     args.share_encoder_embeddings = getattr(args, 'share_encoder_embeddings', False)
     args.share_decoder_embeddings = getattr(args, 'share_decoder_embeddings', False)
     args.share_encoders = getattr(args, 'share_encoders', False)
+    args.student_arch = getattr(args, 'student_arch', "nonautoregressive_transformer")
     args.teacher_arch = getattr(args, 'teacher_arch', "transformer")
 
+    ARCH_CONFIG_REGISTRY[args.student_arch](args)
+    # ARCH_CONFIG_REGISTRY[args.teacher_arch](args)
 
-@register_model_architecture(
-    "mutual_learn_nat", "mutual_learn_nat_iwslt16"
-)
-def mutual_learn_nat_iwslt_16(args):
-    args.encoder_embed_dim = getattr(args, "encoder_embed_dim", 278)
-    args.encoder_ffn_embed_dim = getattr(args, "encoder_ffn_embed_dim", 507)
-    args.encoder_layers = getattr(args, "encoder_layers", 5)
-    args.encoder_attention_heads = getattr(args, "encoder_attention_heads", 2)
-
-    args.decoder_embed_dim = getattr(args, "decoder_embed_dim", 278)
-    args.decoder_ffn_embed_dim = getattr(args, "decoder_ffn_embed_dim", 507)
-    args.decoder_layers = getattr(args, "decoder_layers", 5)
-    args.decoder_attention_heads = getattr(args, "decoder_attention_heads", 2)
     
-    base_mutual_learn_nat_architecture(args)
+
+
+# @register_model_architecture(
+#     "mutual_learn_nat", "mutual_learn_nat_iwslt16"
+# )
+# def mutual_learn_nat_iwslt_16(args):
+#     args.encoder_embed_dim = getattr(args, "encoder_embed_dim", 278)
+#     args.encoder_ffn_embed_dim = getattr(args, "encoder_ffn_embed_dim", 507)
+#     args.encoder_layers = getattr(args, "encoder_layers", 5)
+#     args.encoder_attention_heads = getattr(args, "encoder_attention_heads", 2)
+
+#     args.decoder_embed_dim = getattr(args, "decoder_embed_dim", 278)
+#     args.decoder_ffn_embed_dim = getattr(args, "decoder_ffn_embed_dim", 507)
+#     args.decoder_layers = getattr(args, "decoder_layers", 5)
+#     args.decoder_attention_heads = getattr(args, "decoder_attention_heads", 2)
+
+#     base_mutual_learn_nat_architecture(args)
+    

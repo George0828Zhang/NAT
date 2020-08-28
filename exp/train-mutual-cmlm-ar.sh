@@ -5,16 +5,16 @@ DATA=../DATA/data-bin/iwslt16.distill.en-de
 mkdir -p checkpoints/$TASK
 mkdir -p logdir/$TASK
 ulimit -n $(ulimit -Hn)
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0
 
 fairseq-train --user-dir .. \
     --task translation_mutual \
     --noise random_mask \
     -s en -t de \
-    --max-tokens 2048 \
+    --max-tokens 4096 \
     --max-tokens-valid 1024 \
-    --update-freq 2 \
-    --arch mutual_learn_nat_iwslt16 \
+    --update-freq 1 \
+    --arch mutual_learn_nat \
     --student-arch cmlm_transformer_iwslt16 \
     --teacher-arch transformer_iwslt16 \
     --apply-bert-init \
@@ -22,6 +22,7 @@ fairseq-train --user-dir .. \
     --length-loss-factor 0.1 \
     --sg-length-pred \
     --criterion knowledge_distillation_loss \
+    --distill-top-k 8 \
     --student-kd-factor 0.5 \
     --teacher-kd-factor 0.5 \
     --optimizer adam \
@@ -45,4 +46,5 @@ fairseq-train --user-dir .. \
     --num-workers 8 \
     --max-update 300000 \
     --log-format simple --log-interval 50 \
+    --fp16 \
     $DATA

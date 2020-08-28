@@ -8,11 +8,10 @@ import math
 import torch.nn.functional as F
 import torch
 from torch import Tensor
+from torch.distributions.utils import logits_to_probs
 
 from fairseq import metrics, utils
 from fairseq.criterions import FairseqCriterion, register_criterion
-from torch.distributions.utils import probs_to_logits, logits_to_probs
-import pdb
 
 from fairseq.models.nat import NATransformerModel
 
@@ -130,7 +129,10 @@ class KnowledgeDistillationCriterion(FairseqCriterion):
                 nat_prev_output_tokens if isinstance(target_model, NATransformerModel) else prev_output_tokens,
                 tgt_tokens
             )
-            target_model_logits = target_model_outputs["word_ins"]["out"]
+            target_model_logits, target_model_masks = (
+                target_model_outputs["word_ins"]["out"],
+                target_model_outputs["word_ins"].get("mask", None),
+            )
         
         """ forward model """
         outputs = model(
@@ -159,7 +161,7 @@ class KnowledgeDistillationCriterion(FairseqCriterion):
         kd_losses = self._compute_loss(
             model_logits,
             logits_to_probs(target_model_logits).detach(),
-            model_masks,
+            torch.logical_and(model_masks, target_model_masks),
             name='kd-loss',
             factor=kd_factor,
         )
