@@ -53,19 +53,27 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
         """
         model = super().build_model(args)
         if getattr(args, 'eval_bleu', False):
-            ### Added ar seq gen for bleu2 evaluation            
-            gen_args = {"beam": 1, "max_len_a": 1.2, "max_len_b": 10}
-            self.ar_sequence_generator = TranslationTask.build_generator(
+            ### Added ar seq gen for bleu2 evaluation
+            if model.teacher_is_ar:
+                task_cls = TranslationTask
+                gen_args = Namespace(beam=1, max_len_a=1.2, max_len_b=10, **vars(args))
+            else:
+                task_cls = TranslationLevenshteinTask
+                gen_args = Namespace(iter_decode_max_iter=0, iter_decode_with_beam=1, **vars(args))
+            self.teacher_sequence_generator = task_cls.build_generator(
                 self,
                 [model.teacher],
-                Namespace(**gen_args)
-            ) if model.teacher_is_ar else self.sequence_generator
+                gen_args
+            )
         return model
 
-    def inference_step(self, generator, models, sample, prefix_tokens=None, eval_teacher=False):
-        models = [getattr(m, "teacher" if eval_teacher else "student", m) for m in models]
-        with torch.no_grad():
-            return generator.generate(models, sample, prefix_tokens=prefix_tokens)
+    # def inference_step(self, generator, models, sample, prefix_tokens=None, eval_teacher=False):
+    #     """ This function is overridden for validation runs to work. 
+    #     We need to enable inference for both teacher and students in a validation run, 
+    #     but this is not required in fairseq-generate mode. """
+    #     models = [getattr(m, "teacher" if eval_teacher else "student", m) for m in models]
+    #     with torch.no_grad():
+    #         return generator.generate(models, sample, prefix_tokens=prefix_tokens)
 
     def train_step(self,
                    sample,
@@ -131,7 +139,7 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
 
                 """ added bleu2 for teacher model. """
 
-                bleu2 = self._inference_with_bleu(self.ar_sequence_generator, sample, teacher, eval_teacher=True)
+                bleu2 = self._inference_with_bleu(self.teacher_sequence_generator, sample, teacher, eval_teacher=True)
                 logging_output['_bleu2_sys_len'] = bleu2.sys_len
                 logging_output['_bleu2_ref_len'] = bleu2.ref_len
                 # we split counts into separate entries so that they can be
@@ -167,7 +175,7 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
                 s = self.tokenizer.decode(s)
             return s if s else "UNKNOWNTOKENINREF"
 
-        gen_out = self.inference_step(generator, [model], sample, None, eval_teacher=eval_teacher)
+        gen_out = self.inference_step(generator, [model], sample, None)
         hyps, refs = [], []
         for i in range(len(gen_out)):
             hyps.append(decode(gen_out[i][0]['tokens']))

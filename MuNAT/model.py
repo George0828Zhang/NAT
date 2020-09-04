@@ -1,3 +1,4 @@
+import re
 import pdb
 import torch
 from fairseq.models import (
@@ -29,8 +30,17 @@ class MutualLearnNATransformerModel(BaseFairseqModel):
         self.teacher = teacher
         self.teacher_is_ar = not isinstance(teacher, NATransformerModel)
         self.freeze_teacher = getattr(args, "freeze_teacher", False)
-        if self.freeze_teacher == "freeze":
+        if self.freeze_teacher:
+            logger.warning("Teacher weights will be freezed!")
             freeze_module_params(self.teacher)
+        
+        # for inference time
+        if getattr(args, "reduce_to_teacher", False):
+            self.reduced_model = self.teacher
+        elif getattr(args, "reduce_to_student", False):
+            self.reduced_model = self.student
+        else:
+            self.reduced_model = None
 
     @staticmethod
     def add_args(parser):
@@ -46,10 +56,17 @@ class MutualLearnNATransformerModel(BaseFairseqModel):
                             help='determine the type of student network to mutual learn from.')        
         parser.add_argument('--teacher-arch', default="transformer",
                             help='determine the type of teacher network to mutual learn from.')
-        parser.add_argument('--load-teacher-only', action='store_true',
-                            help='only load teacher network.')
+
+        parser.add_argument('--load-to-teacher', action='store_true',
+                            help='load checkpoint to teacher network.')
         parser.add_argument('--freeze-teacher', action='store_true',
                 help='whether to freeze teacher.')
+
+        # inference flags
+        parser.add_argument('--reduce-to-student', action='store_true',
+                            help='when inference, only load student network.')
+        parser.add_argument('--reduce-to-teacher', action='store_true',
+                            help='when inference, only load teacher network.')
                             
 
     @classmethod
@@ -122,10 +139,37 @@ class MutualLearnNATransformerModel(BaseFairseqModel):
     ##################################
     # some functions to avoid errors #
     ##################################
-
+    # Both
     def max_positions(self):
         """Maximum length supported by the model."""
-        return self.student.max_positions()
+        return self.student.max_positions() # also needed in validation runs.
+
+    def forward_encoder(self, *args, **kwargs):
+        return self.reduced_model.forward_encoder(*args, **kwargs)    
+    def forward_decoder(self, *args, **kwargs):
+        return self.reduced_model.forward_decoder(*args, **kwargs)
+    
+    # NAT
+    def initialize_output_tokens(self, *args, **kwargs):
+        return self.reduced_model.initialize_output_tokens(*args, **kwargs)    
+    def allow_length_beam(self, *args, **kwargs):
+        return self.reduced_model.allow_length_beam(*args, **kwargs)
+    def regenerate_length_beam(self, *args, **kwargs):
+        return self.reduced_model.regenerate_length_beam(*args, **kwargs)    
+    @property
+    def encoder(self):
+        return self.reduced_model.encoder
+
+    # AR
+    def max_decoder_positions(self, *args, **kwargs):
+        return self.reduced_model.max_decoder_positions(*args, **kwargs)
+    def reorder_encoder_out(self, *args, **kwargs):
+        return self.reduced_model.reorder_encoder_out(*args, **kwargs)
+    def reorder_incremental_state(self, *args, **kwargs):
+        return self.reduced_model.reorder_incremental_state(*args, **kwargs)
+    ##################################
+    #  end functions to avoid errors #
+    ##################################    
 
     def load_state_dict(self, state_dict, strict=True, args=None):
         """Copies parameters and buffers from *state_dict* into this module and
@@ -138,8 +182,8 @@ class MutualLearnNATransformerModel(BaseFairseqModel):
         """Overrides fairseq_model.py
 
         """
-        if getattr(args, "load_teacher_only", False):
-            logger.warning("Will only load teacher weights!")
+        if getattr(args, "load_to_teacher", False):
+            logger.warning("Will load checkpoint weights to teacher!")
             cur = self.state_dict()
             for k, v in state_dict.items():
                 cur["teacher." + k] = v
