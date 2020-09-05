@@ -49,35 +49,8 @@ class TranslationMutualLearningTask(TranslationTask):
             help="weights on the knowledge distillation loss for training teacher"
         )
 
-    def load_dataset(self, split, epoch=1, combine=False, **kwargs):
-        """Load a given dataset split. ***Updated with original translation. Removes prepend_bos.***
-
-        Args:
-            split (str): name of the split (e.g., train, valid, test)
-        """
-        paths = utils.split_paths(self.args.data)
-        assert len(paths) > 0
-        if split != getattr(self.args, "train_subset", None):
-            # if not training data set, use the first shard for valid and test
-            paths = paths[:1]
-        data_path = paths[(epoch - 1) % len(paths)]
-
-        # infer langcode
-        src, tgt = self.args.source_lang, self.args.target_lang
-
-        self.datasets[split] = load_langpair_dataset(
-            data_path, split, src, self.src_dict, tgt, self.tgt_dict,
-            combine=combine, dataset_impl=self.args.dataset_impl,
-            upsample_primary=self.args.upsample_primary,
-            left_pad_source=self.args.left_pad_source,
-            left_pad_target=self.args.left_pad_target,
-            max_source_positions=self.args.max_source_positions,
-            max_target_positions=self.args.max_target_positions,
-            load_alignments=self.args.load_alignments,
-            truncate_source=self.args.truncate_source,
-            num_buckets=self.args.num_batch_buckets,
-            shuffle=(split != 'test'),
-        )
+    # inherit from translationtask
+    # def load_dataset(self, split, epoch=1, combine=False, **kwargs):
 
     def inject_noise(self, target_tokens):
         def _random_delete(target_tokens):
@@ -171,7 +144,7 @@ class TranslationMutualLearningTask(TranslationTask):
             # Though see Susanto et al. (ACL 2020): https://www.aclweb.org/anthology/2020.acl-main.325/
             raise NotImplementedError("Constrained decoding with the translation_lev task is not supported")        
         return LanguagePairDataset(src_tokens, src_lengths, self.source_dictionary,
-                                   tgt_dict=self.target_dictionary, append_bos=True)
+                                   tgt_dict=self.target_dictionary)
 
     def build_model(self, args):
         """

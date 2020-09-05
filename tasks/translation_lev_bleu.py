@@ -61,30 +61,8 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
             raise (f'please enable add-lang-token for use-lang-token to work.')
         super().__init__(args, src_dict, tgt_dict)
 
-    def load_dataset(self, split, epoch=1, combine=False, **kwargs):
-        """Load a given dataset split.
-
-        Args:
-            split (str): name of the split (e.g., train, valid, test)
-        """
-        paths = utils.split_paths(self.args.data)
-        assert len(paths) > 0
-        data_path = paths[(epoch - 1) % len(paths)]
-
-        # infer langcode
-        src, tgt = self.args.source_lang, self.args.target_lang
-
-        self.datasets[split] = load_langpair_dataset(
-            data_path, split, src, self.src_dict, tgt, self.tgt_dict,
-            combine=combine, dataset_impl=self.args.dataset_impl,
-            upsample_primary=self.args.upsample_primary,
-            left_pad_source=self.args.left_pad_source,
-            left_pad_target=self.args.left_pad_target,
-            max_source_positions=self.args.max_source_positions,
-            max_target_positions=self.args.max_target_positions,
-            prepend_bos=True,
-            append_source_id=self.args.use_lang_token,
-        )
+    # inherit from translationtask
+    # def load_dataset(self, split, epoch=1, combine=False, **kwargs):
 
     def inject_noise(self, target_tokens, mask_id=None):        
         unk = mask_id if mask_id is not None else self.tgt_dict.unk()
@@ -175,17 +153,23 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
             gen.eos=self.target_dictionary.index('[{}]'.format(self.args.target_lang))
         return gen
 
-    def build_dataset_for_inference(self, src_tokens, src_lengths):
+    def build_dataset_for_inference(self, src_tokens, src_lengths, constraints=None):
+        """ *Removes append_bos* """
+        if constraints is not None:
+            # Though see Susanto et al. (ACL 2020): https://www.aclweb.org/anthology/2020.acl-main.325/
+            raise NotImplementedError("Constrained decoding with the translation_lev task is not supported")
+
         if self.args.use_lang_token:
             src_lang_id = self.source_dictionary.index('[{}]'.format(self.args.source_lang))
             source_tokens = []
             for s_t in src_tokens:
                 s_t = torch.cat([s_t, s_t.new(1).fill_(src_lang_id)])
                 source_tokens.append(s_t)
-            dataset = LanguagePairDataset(src_tokens, src_lengths, self.source_dictionary)
+            dataset = LanguagePairDataset(source_tokens, src_lengths, self.source_dictionary, tgt_dict=self.target_dictionary)
             return dataset
         else:
-            return super().build_dataset_for_inference(src_tokens, src_lengths)
+            return LanguagePairDataset(src_tokens, src_lengths, self.source_dictionary,
+                                   tgt_dict=self.target_dictionary)
 
     def train_step(self,
                    sample,
@@ -203,13 +187,6 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
             loss *= 0
         optimizer.backward(loss)
         return loss, sample_size, logging_output
-
-    # def valid_step(self, sample, model, criterion):
-    #     model.eval()
-    #     with torch.no_grad():
-    #         sample['prev_target'] = self.inject_noise(sample['target'])
-    #         loss, sample_size, logging_output = criterion(model, sample)
-    #     return loss, sample_size, logging_output
 
     def valid_step(self, sample, model, criterion):
         model.eval()
@@ -262,66 +239,3 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
             return sacrebleu.corpus_bleu(hyps, [refs], tokenize='none')
         else:
             return sacrebleu.corpus_bleu(hyps, [refs])
-
-
-    ###################################
-    # inherited from translation task #
-    ###################################
-
-    # def valid_step(self, sample, model, criterion):
-    #     loss, sample_size, logging_output = super().valid_step(sample, model, criterion)
-    #     if self.args.eval_bleu:
-    #         bleu = self._inference_with_bleu(self.sequence_generator, sample, model)
-    #         logging_output['_bleu_sys_len'] = bleu.sys_len
-    #         logging_output['_bleu_ref_len'] = bleu.ref_len
-    #         # we split counts into separate entries so that they can be
-    #         # summed efficiently across workers using fast-stat-sync
-    #         assert len(bleu.counts) == EVAL_BLEU_ORDER
-    #         for i in range(EVAL_BLEU_ORDER):
-    #             logging_output['_bleu_counts_' + str(i)] = bleu.counts[i]
-    #             logging_output['_bleu_totals_' + str(i)] = bleu.totals[i]
-    #     return loss, sample_size, logging_output
-
-    # def reduce_metrics(self, logging_outputs, criterion):
-    #     super().reduce_metrics(logging_outputs, criterion)
-    #     if self.args.eval_bleu:
-
-    #         def sum_logs(key):
-    #             return sum(log.get(key, 0) for log in logging_outputs)
-
-    #         counts, totals = [], []
-    #         for i in range(EVAL_BLEU_ORDER):
-    #             counts.append(sum_logs('_bleu_counts_' + str(i)))
-    #             totals.append(sum_logs('_bleu_totals_' + str(i)))
-
-    #         if max(totals) > 0:
-    #             # log counts as numpy arrays -- log_scalar will sum them correctly
-    #             metrics.log_scalar('_bleu_counts', np.array(counts))
-    #             metrics.log_scalar('_bleu_totals', np.array(totals))
-    #             metrics.log_scalar('_bleu_sys_len', sum_logs('_bleu_sys_len'))
-    #             metrics.log_scalar('_bleu_ref_len', sum_logs('_bleu_ref_len'))
-
-    #             def compute_bleu(meters):
-    #                 import inspect
-    #                 import sacrebleu
-    #                 fn_sig = inspect.getfullargspec(sacrebleu.compute_bleu)[0]
-    #                 if 'smooth_method' in fn_sig:
-    #                     smooth = {'smooth_method': 'exp'}
-    #                 else:
-    #                     smooth = {'smooth': 'exp'}
-    #                 bleu = sacrebleu.compute_bleu(
-    #                     correct=meters['_bleu_counts'].sum,
-    #                     total=meters['_bleu_totals'].sum,
-    #                     sys_len=meters['_bleu_sys_len'].sum,
-    #                     ref_len=meters['_bleu_ref_len'].sum,
-    #                     **smooth
-    #                 )
-    #                 return round(bleu.score, 2)
-
-    #             metrics.log_derived('bleu', compute_bleu)
-
-    # def inference_step(self, generator, models, sample, prefix_tokens=None):
-    #     with torch.no_grad():
-    #         return generator.generate(models, sample, prefix_tokens=prefix_tokens)
-
-    
