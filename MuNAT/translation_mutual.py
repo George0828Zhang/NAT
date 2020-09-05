@@ -14,23 +14,30 @@ from fairseq.data import (
 from fairseq.utils import new_arange
 from fairseq.tasks import register_task
 from fairseq.tasks.translation import TranslationTask, load_langpair_dataset, EVAL_BLEU_ORDER
-from fairseq.tasks.translation_lev import TranslationLevenshteinTask
 from fairseq import utils, metrics
 
 import numpy as np
 logger = logging.getLogger(__name__)
 
 @register_task('translation_mutual')
-class TranslationMutualLearningTask(TranslationLevenshteinTask):
+class TranslationMutualLearningTask(TranslationTask):
     """
-    Translation (Sequence Generation) task for Levenshtein Transformer
-    See `"Levenshtein Transformer" <https://arxiv.org/abs/1905.11006>`_.
-    """
+    Translation (Sequence Generation) task for
+    """    
+    def __init__(self, args, src_dict, tgt_dict):        
+        super().__init__(args, src_dict, tgt_dict)
+        self.student_kd_factor = args.student_kd_factor
+        self.teacher_kd_factor = args.teacher_kd_factor
 
     @staticmethod
     def add_args(parser):
-        """Add task-specific arguments to the parser."""        
-        TranslationLevenshteinTask.add_args(parser)    
+        """Add task-specific arguments to the parser."""
+        TranslationTask.add_args(parser)
+        parser.add_argument(
+            '--noise',
+            default='random_delete',
+            choices=['random_delete', 'random_mask', 'no_noise', 'full_mask']) 
+
         parser.add_argument("--student-kd-factor", 
             default=.5,
             type=float,
@@ -42,10 +49,129 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
             help="weights on the knowledge distillation loss for training teacher"
         )
 
-    def __init__(self, args, src_dict, tgt_dict):        
-        super().__init__(args, src_dict, tgt_dict)
-        self.student_kd_factor = args.student_kd_factor
-        self.teacher_kd_factor = args.teacher_kd_factor
+    def load_dataset(self, split, epoch=1, combine=False, **kwargs):
+        """Load a given dataset split. ***Updated with original translation. Removes prepend_bos.***
+
+        Args:
+            split (str): name of the split (e.g., train, valid, test)
+        """
+        paths = utils.split_paths(self.args.data)
+        assert len(paths) > 0
+        if split != getattr(self.args, "train_subset", None):
+            # if not training data set, use the first shard for valid and test
+            paths = paths[:1]
+        data_path = paths[(epoch - 1) % len(paths)]
+
+        # infer langcode
+        src, tgt = self.args.source_lang, self.args.target_lang
+
+        self.datasets[split] = load_langpair_dataset(
+            data_path, split, src, self.src_dict, tgt, self.tgt_dict,
+            combine=combine, dataset_impl=self.args.dataset_impl,
+            upsample_primary=self.args.upsample_primary,
+            left_pad_source=self.args.left_pad_source,
+            left_pad_target=self.args.left_pad_target,
+            max_source_positions=self.args.max_source_positions,
+            max_target_positions=self.args.max_target_positions,
+            load_alignments=self.args.load_alignments,
+            truncate_source=self.args.truncate_source,
+            num_buckets=self.args.num_batch_buckets,
+            shuffle=(split != 'test'),
+        )
+
+    def inject_noise(self, target_tokens):
+        def _random_delete(target_tokens):
+            pad = self.tgt_dict.pad()
+            bos = self.tgt_dict.bos()
+            eos = self.tgt_dict.eos()
+
+            max_len = target_tokens.size(1)
+            target_mask = target_tokens.eq(pad)
+            target_score = target_tokens.clone().float().uniform_()
+            target_score.masked_fill_(
+                target_tokens.eq(bos) | target_tokens.eq(eos), 0.0)
+            target_score.masked_fill_(target_mask, 1)
+            target_score, target_rank = target_score.sort(1)
+            target_length = target_mask.size(1) - target_mask.float().sum(
+                1, keepdim=True)
+
+            # do not delete <bos> and <eos> (we assign 0 score for them)
+            target_cutoff = 2 + ((target_length - 2) * target_score.new_zeros(
+                target_score.size(0), 1).uniform_()).long()
+            target_cutoff = target_score.sort(1)[1] >= target_cutoff
+
+            prev_target_tokens = target_tokens.gather(
+                1, target_rank).masked_fill_(target_cutoff, pad).gather(
+                    1,
+                    target_rank.masked_fill_(target_cutoff,
+                                             max_len).sort(1)[1])
+            prev_target_tokens = prev_target_tokens[:, :prev_target_tokens.
+                                                    ne(pad).sum(1).max()]
+
+            return prev_target_tokens
+
+        def _random_mask(target_tokens):
+            pad = self.tgt_dict.pad()
+            bos = self.tgt_dict.bos()
+            eos = self.tgt_dict.eos()
+            unk = self.tgt_dict.unk()
+
+            target_masks = target_tokens.ne(pad) & \
+                           target_tokens.ne(bos) & \
+                           target_tokens.ne(eos)
+            target_score = target_tokens.clone().float().uniform_()
+            target_score.masked_fill_(~target_masks, 2.0)
+            target_length = target_masks.sum(1).float()
+            target_length = target_length * target_length.clone().uniform_()
+            target_length = target_length + 1  # make sure to mask at least one token.
+
+            _, target_rank = target_score.sort(1)
+            target_cutoff = new_arange(target_rank) < target_length[:, None].long()
+            prev_target_tokens = target_tokens.masked_fill(
+                target_cutoff.scatter(1, target_rank, target_cutoff), unk)
+            return prev_target_tokens
+
+        def _full_mask(target_tokens):
+            pad = self.tgt_dict.pad()
+            bos = self.tgt_dict.bos()
+            eos = self.tgt_dict.eos()
+            unk = self.tgt_dict.unk()
+
+            target_mask = target_tokens.eq(bos) | target_tokens.eq(
+                eos) | target_tokens.eq(pad)
+            return target_tokens.masked_fill(~target_mask, unk)
+
+        if self.args.noise == 'random_delete':
+            return _random_delete(target_tokens)
+        elif self.args.noise == 'random_mask':
+            return _random_mask(target_tokens)
+        elif self.args.noise == 'full_mask':
+            return _full_mask(target_tokens)
+        elif self.args.noise == 'no_noise':
+            return target_tokens
+        else:
+            raise NotImplementedError
+
+    def build_generator(self, models, args):
+        # add models input to match the API for SequenceGenerator
+        from fairseq.iterative_refinement_generator import IterativeRefinementGenerator
+        return IterativeRefinementGenerator(
+            self.target_dictionary,
+            eos_penalty=getattr(args, 'iter_decode_eos_penalty', 0.0),
+            max_iter=getattr(args, 'iter_decode_max_iter', 10),
+            beam_size=getattr(args, 'iter_decode_with_beam', 1),
+            reranking=getattr(args, 'iter_decode_with_external_reranker', False),
+            decoding_format=getattr(args, 'decoding_format', None),
+            adaptive=not getattr(args, 'iter_decode_force_max_iter', False),
+            retain_history=getattr(args, 'retain_iter_history', False))
+
+    def build_dataset_for_inference(self, src_tokens, src_lengths, constraints=None):
+        """ *Removes append_bos* """
+        if constraints is not None:
+            # Though see Susanto et al. (ACL 2020): https://www.aclweb.org/anthology/2020.acl-main.325/
+            raise NotImplementedError("Constrained decoding with the translation_lev task is not supported")        
+        return LanguagePairDataset(src_tokens, src_lengths, self.source_dictionary,
+                                   tgt_dict=self.target_dictionary, append_bos=True)
 
     def build_model(self, args):
         """
@@ -58,7 +184,7 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
                 task_cls = TranslationTask
                 gen_args = Namespace(beam=1, max_len_a=1.2, max_len_b=10, **vars(args))
             else:
-                task_cls = TranslationLevenshteinTask
+                task_cls = TranslationMutualLearningTask
                 gen_args = Namespace(iter_decode_max_iter=0, iter_decode_with_beam=1, **vars(args))
             self.teacher_sequence_generator = task_cls.build_generator(
                 self,
@@ -66,14 +192,6 @@ class TranslationMutualLearningTask(TranslationLevenshteinTask):
                 gen_args
             )
         return model
-
-    # def inference_step(self, generator, models, sample, prefix_tokens=None, eval_teacher=False):
-    #     """ This function is overridden for validation runs to work. 
-    #     We need to enable inference for both teacher and students in a validation run, 
-    #     but this is not required in fairseq-generate mode. """
-    #     models = [getattr(m, "teacher" if eval_teacher else "student", m) for m in models]
-    #     with torch.no_grad():
-    #         return generator.generate(models, sample, prefix_tokens=prefix_tokens)
 
     def train_step(self,
                    sample,
