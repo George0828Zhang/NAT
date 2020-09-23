@@ -3,7 +3,13 @@
 WORKERS=8
 BIN=$(pwd)/data-bin
 TMP=/media/george/Data/iwslt16.lee.raw
-OUTDIR=$BIN/iwslt16.distill.en-de
+OUTDIR=$BIN/iwslt16.en-de
+EXTRAOPTIONS=$1
+
+if [[ $EXTRAOPTIONS = 'distill' ]]; then
+    OUTDIR=$BIN/iwslt16.distill.en-de
+fi
+
 
 URL="https://drive.google.com/u/0/uc?id=1m7dZqEXHWPYcre6xxsFwFLrb9CRCZGmn&export=download"
 GZ=iwslt.tar.gz
@@ -36,7 +42,11 @@ cd ..
 
 for L in $src $tgt; do
     prep=$TMP/iwslt/en-de
-    cp $prep/distill/ende/train.tags.en-de.bpe.$L $TMP/train.$L
+    if [[ $EXTRAOPTIONS = 'distill' ]]; then
+        cp $prep/distill/ende/train.tags.en-de.bpe.$L $TMP/train.$L
+    else
+        cp $prep/train/train.tags.en-de.bpe.$L $TMP/train.$L
+    fi
     cp $prep/dev/valid.bpe.$L $TMP/valid.$L
 done
 
