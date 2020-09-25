@@ -14,7 +14,9 @@ from fairseq import metrics, utils
 from fairseq.criterions import FairseqCriterion, register_criterion
 
 from fairseq.models.nat import NATransformerModel
+import logging
 
+logger = logging.getLogger(__name__)
 def top_k_kl_div(logits, targets, k, reduction='none'):
     if k != -1:
         values, indices = torch.topk(targets.to(logits.device), k, dim=-1)
@@ -102,10 +104,23 @@ class KnowledgeDistillationCriterion(FairseqCriterion):
         loss = loss * factor
         return {"name": name, "loss": loss, "nll_loss": nll_loss, "factor": factor}
 
+    def _compute_loss_ctrl(
+        self, *args, controller=None, **kwargs
+    ):
+        kwargs["factor"] = 1.0
+        out = self._compute_loss(*args, **kwargs)
+        if controller is not None:
+            loss = out["loss"]
+            kd_factor = controller(loss).item()
+            out["loss"] = loss*kd_factor
+            out["factor"] = kd_factor
+        return out
+
+
     def _custom_loss(self, loss, name="loss", factor=1.0):
         return {"name": name, "loss": loss, "factor": factor}
 
-    def forward(self, model, target_model, sample, reduce=True, kd_factor=0.5):
+    def forward(self, model, target_model, sample, reduce=True):
         """Compute the loss for the given sample.
 
         Returns a tuple with three elements:
@@ -156,14 +171,16 @@ class KnowledgeDistillationCriterion(FairseqCriterion):
             model_masks,
             smoothing,
             name='label-loss',
-            factor=1. - kd_factor
+            factor=1. # 1. - kd_factor
         )
-        kd_losses = self._compute_loss(
+
+        kd_losses = self._compute_loss_ctrl(
             model_logits,
             logits_to_probs(target_model_logits).detach(),
             torch.logical_and(model_masks, target_model_masks),
             name='kd-loss',
-            factor=kd_factor,
+            factor=model.kd_factor,
+            controller=model.controller if model.use_control_kd_factor else None,
         )
 
         losses = [

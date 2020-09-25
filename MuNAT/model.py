@@ -1,6 +1,8 @@
 import re
 import pdb
+import json
 import torch
+from argparse import Namespace
 from fairseq.models import (
     register_model, 
     register_model_architecture, 
@@ -33,6 +35,21 @@ class MutualLearnNATransformerModel(BaseFairseqModel):
         if self.freeze_teacher:
             logger.warning("Teacher weights will be freezed!")
             freeze_module_params(self.teacher)
+
+        # for KD loss controlling
+        self.student.kd_factor = args.student_kd_factor
+        self.teacher.kd_factor = args.teacher_kd_factor
+        use_control_kd_factor = getattr(
+            args, "control_kd_factor", False)
+        self.student.use_control_kd_factor = use_control_kd_factor
+        self.teacher.use_control_kd_factor = use_control_kd_factor
+
+        if use_control_kd_factor:
+            control_args = Namespace(**json.loads(
+                getattr(args, 'control_kd_args', '{}') or '{}'))
+            from .ctrlvae import ctrlVAE
+            self.student.controller = ctrlVAE(control_args)
+            self.teacher.controller = ctrlVAE(control_args)
         
         # for inference time
         if getattr(args, "reduce_to_teacher", False):
@@ -61,6 +78,22 @@ class MutualLearnNATransformerModel(BaseFairseqModel):
                             help='load checkpoint to teacher network.')
         parser.add_argument('--freeze-teacher', action='store_true',
                 help='whether to freeze teacher.')
+
+        parser.add_argument("--student-kd-factor",
+                            default=.5,
+                            type=float,
+                            help="weights on the knowledge distillation loss for training student"
+                            )
+        parser.add_argument("--teacher-kd-factor",
+                            default=.5,
+                            type=float,
+                            help="weights on the knowledge distillation loss for training teacher"
+                            )
+        parser.add_argument("--control-kd-factor", action="store_true",
+                            help="use the PI algorithm introduced in ControlVAE to calculate the weight on KL-divergence on latent.")
+        parser.add_argument('--control-kd-args', type=str, metavar='JSON',
+                            help="""args for ControlVAE, a valid setup is: '{"v_kl": 3.0, "Kp": 0.01, "Ki": 0.0001, "beta_min": 0.0, "beta_max": 1.0 }' """)
+
 
         # inference flags
         parser.add_argument('--reduce-to-student', action='store_true',
@@ -136,6 +169,8 @@ class MutualLearnNATransformerModel(BaseFairseqModel):
 
         return cls(args, student, teacher)
 
+    def set_num_updates(self, num_updates):
+        self.num_updates = num_updates
     ##################################
     # some functions to avoid errors #
     ##################################

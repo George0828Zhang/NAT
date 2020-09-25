@@ -24,10 +24,10 @@ class TranslationMutualLearningTask(TranslationTask):
     """
     Translation (Sequence Generation) task for
     """    
-    def __init__(self, args, src_dict, tgt_dict):        
-        super().__init__(args, src_dict, tgt_dict)
-        self.student_kd_factor = args.student_kd_factor
-        self.teacher_kd_factor = args.teacher_kd_factor
+    # def __init__(self, args, src_dict, tgt_dict):        
+    #     super().__init__(args, src_dict, tgt_dict)
+    #     self.student_kd_factor = args.student_kd_factor
+    #     self.teacher_kd_factor = args.teacher_kd_factor
 
     @staticmethod
     def add_args(parser):
@@ -38,16 +38,16 @@ class TranslationMutualLearningTask(TranslationTask):
             default='random_delete',
             choices=['random_delete', 'random_mask', 'no_noise', 'full_mask']) 
 
-        parser.add_argument("--student-kd-factor", 
-            default=.5,
-            type=float,
-            help="weights on the knowledge distillation loss for training student"
-        )
-        parser.add_argument("--teacher-kd-factor", 
-            default=.5,
-            type=float,
-            help="weights on the knowledge distillation loss for training teacher"
-        )
+        # parser.add_argument("--student-kd-factor", 
+        #     default=.5,
+        #     type=float,
+        #     help="weights on the knowledge distillation loss for training student"
+        # )
+        # parser.add_argument("--teacher-kd-factor", 
+        #     default=.5,
+        #     type=float,
+        #     help="weights on the knowledge distillation loss for training teacher"
+        # )
 
     # inherit from translationtask
     # def load_dataset(self, split, epoch=1, combine=False, **kwargs):
@@ -180,7 +180,7 @@ class TranslationMutualLearningTask(TranslationTask):
         """ forward model """
         student.train()
         teacher.eval()
-        loss, sample_size, logging_output = criterion(student, teacher, sample, kd_factor=self.student_kd_factor)
+        loss, sample_size, logging_output = criterion(student, teacher, sample)
         if ignore_grad:
             loss *= 0
         optimizer.backward(loss)
@@ -189,7 +189,7 @@ class TranslationMutualLearningTask(TranslationTask):
         if not getattr(model, "freeze_teacher", False):
             teacher.train()
             student.eval()
-            teacher_loss, _, teacher_logging_output = criterion(teacher, student, sample, kd_factor=self.teacher_kd_factor)
+            teacher_loss, _, teacher_logging_output = criterion(teacher, student, sample)
             if ignore_grad:
                 teacher_loss *= 0
             optimizer.backward(teacher_loss)
@@ -207,8 +207,8 @@ class TranslationMutualLearningTask(TranslationTask):
         student, teacher = model.student, model.teacher
         with torch.no_grad():
             sample['prev_target'] = self.inject_noise(sample['target'])
-            loss, sample_size, logging_output = criterion(student, teacher, sample, kd_factor=self.student_kd_factor)
-            _, _, teacher_logging_output = criterion(teacher, student, sample, kd_factor=self.teacher_kd_factor)
+            loss, sample_size, logging_output = criterion(student, teacher, sample)
+            _, _, teacher_logging_output = criterion(teacher, student, sample)
             for k, v in teacher_logging_output.items():
                 if k == "loss":
                     logging_output["loss"] += v
