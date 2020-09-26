@@ -3,19 +3,42 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from fairseq.models import register_model, register_model_architecture
-from fairseq.models.nat import NATransformerModel, NATransformerDecoder
+import math
+import torch
+import torch.nn as nn
+
+
+from fairseq.modules import (
+    FairseqDropout,
+    LayerNorm,
+    PositionalEmbedding
+)
+from fairseq.models import (
+    register_model,
+    register_model_architecture,
+    FairseqEncoder
+)
+from fairseq.models.nat import (
+    NATransformerModel,
+    NATransformerDecoder,
+    FairseqNATModel
+)
+from fairseq.models.fairseq_encoder import EncoderOut
+from fairseq.modules.transformer_sentence_encoder import init_bert_params
 
 @register_model("imputer")
 class ImputerModel(NATransformerModel):
+    """
+    Implementing the Imputer model from 
+    Imputer: Sequence Modelling via Imputation and Dynamic Programming
+    """
+
     @staticmethod
     def add_args(parser):
         """Add model-specific arguments to the parser."""        
         FairseqNATModel.add_args(parser)
         # parser.add_argument('--encoder-learned-pos', action='store_true',
         #                     help='use learned positional embeddings in the encoder')
-        parser.add_argument('--no-encoder-positional-embeddings', default=False, action='store_true',
-                            help='if set, disables encoder positional embeddings (outside self attention)')
         parser.add_argument("--upsample-scale", type=int,
                             help="upsampling scale s to use for encoder features")
     
@@ -33,72 +56,72 @@ class ImputerModel(NATransformerModel):
             encoder.apply(init_bert_params)
         return encoder
 
-    def forward(
-        self, src_tokens, src_lengths, prev_output_tokens, tgt_tokens, **kwargs
-    ):
-        raise NotImplementedError("TODO")
-        # encoding
-        encoder_out = self.encoder(src_tokens, src_lengths=src_lengths, **kwargs)
+    # def forward(
+    #     self, src_tokens, src_lengths, prev_output_tokens, tgt_tokens, **kwargs
+    # ):
+    #     raise NotImplementedError("TODO")
+    #     # encoding
+    #     encoder_out = self.encoder(src_tokens, src_lengths=src_lengths, **kwargs)
         
-        # decoding
-        word_ins_out = self.decoder(
-            normalize=False,
-            prev_output_tokens=prev_output_tokens,
-            encoder_out=encoder_out)
-        word_ins_mask = prev_output_tokens.eq(self.unk)
+    #     # decoding
+    #     word_ins_out = self.decoder(
+    #         normalize=False,
+    #         prev_output_tokens=prev_output_tokens,
+    #         encoder_out=encoder_out)
+    #     word_ins_mask = prev_output_tokens.eq(self.unk)
 
-        return {
-            "word_ins": {
-                "out": word_ins_out, "tgt": tgt_tokens,
-                "mask": word_ins_mask, "ls": self.args.label_smoothing,
-                "nll_loss": True
-            },
-            "length": {
-                "out": length_out, "tgt": length_tgt,
-                "factor": self.decoder.length_loss_factor
-            }
-        }
+    #     return {
+    #         "word_ins": {
+    #             "out": word_ins_out, "tgt": tgt_tokens,
+    #             "mask": word_ins_mask, "ls": self.args.label_smoothing,
+    #             "nll_loss": True
+    #         },
+    #         "length": {
+    #             "out": length_out, "tgt": length_tgt,
+    #             "factor": self.decoder.length_loss_factor
+    #         }
+    #     }
 
-    def forward_decoder(self, decoder_out, encoder_out, decoding_format=None, **kwargs):
-        raise NotImplementedError("TODO")
-        step = decoder_out.step
-        max_step = decoder_out.max_step
+    # def forward_decoder(self, decoder_out, encoder_out, decoding_format=None, **kwargs):
+    #     raise NotImplementedError("TODO")
+    #     step = decoder_out.step
+    #     max_step = decoder_out.max_step
 
-        output_tokens = decoder_out.output_tokens
-        output_scores = decoder_out.output_scores
-        history = decoder_out.history
+    #     output_tokens = decoder_out.output_tokens
+    #     output_scores = decoder_out.output_scores
+    #     history = decoder_out.history
 
-        # execute the decoder
-        output_masks = output_tokens.eq(self.unk)
-        _scores, _tokens = self.decoder(
-            normalize=True,
-            prev_output_tokens=output_tokens,
-            encoder_out=encoder_out,
-        ).max(-1)
-        output_tokens.masked_scatter_(output_masks, _tokens[output_masks])
-        output_scores.masked_scatter_(output_masks, _scores[output_masks])
+    #     # execute the decoder
+    #     output_masks = output_tokens.eq(self.unk)
+    #     _scores, _tokens = self.decoder(
+    #         normalize=True,
+    #         prev_output_tokens=output_tokens,
+    #         encoder_out=encoder_out,
+    #     ).max(-1)
+    #     output_tokens.masked_scatter_(output_masks, _tokens[output_masks])
+    #     output_scores.masked_scatter_(output_masks, _scores[output_masks])
 
-        if history is not None:
-            history.append(output_tokens.clone())
+    #     if history is not None:
+    #         history.append(output_tokens.clone())
 
-        # skeptical decoding (depend on the maximum decoding steps.)
-        if (step + 1) < max_step:
-            skeptical_mask = _skeptical_unmasking(
-                output_scores, output_tokens.ne(self.pad), 1 - (step + 1) / max_step
-            )
+    #     # skeptical decoding (depend on the maximum decoding steps.)
+    #     if (step + 1) < max_step:
+    #         skeptical_mask = _skeptical_unmasking(
+    #             output_scores, output_tokens.ne(self.pad), 1 - (step + 1) / max_step
+    #         )
 
-            output_tokens.masked_fill_(skeptical_mask, self.unk)
-            output_scores.masked_fill_(skeptical_mask, 0.0)
+    #         output_tokens.masked_fill_(skeptical_mask, self.unk)
+    #         output_scores.masked_fill_(skeptical_mask, 0.0)
 
-            if history is not None:
-                history.append(output_tokens.clone())
+    #         if history is not None:
+    #             history.append(output_tokens.clone())
 
-        return decoder_out._replace(
-            output_tokens=output_tokens,
-            output_scores=output_scores,
-            attn=None,
-            history=history
-        )
+    #     return decoder_out._replace(
+    #         output_tokens=output_tokens,
+    #         output_scores=output_scores,
+    #         attn=None,
+    #         history=history
+    #     )
 
     
 
@@ -126,7 +149,6 @@ class ImputerEncoder(FairseqEncoder):
 
         self.embed_scale = 1.0 if args.no_scale_embedding else math.sqrt(embed_dim)
 
-        # decoder already has this, maybe we don't need to add this        
         self.embed_positions = (
             PositionalEmbedding(
                 args.max_source_positions,
@@ -134,9 +156,13 @@ class ImputerEncoder(FairseqEncoder):
                 self.padding_idx,
                 learned=args.encoder_learned_pos,
             )
-            if not args.no_encoder_positional_embeddings #args.no_token_positional_embeddings
+            if not args.no_token_positional_embeddings
             else None
         )
+        if getattr(args, "layernorm_embedding", False):
+            self.layernorm_embedding = LayerNorm(embed_dim)
+        else:
+            self.layernorm_embedding = None
 
         self.upsample_scale = args.upsample_scale
         self.upsampler = nn.Linear(embed_dim, self.upsample_scale*embed_dim)
@@ -149,11 +175,9 @@ class ImputerEncoder(FairseqEncoder):
         if self.layernorm_embedding is not None:
             x = self.layernorm_embedding(x)
         x = self.dropout_module(x)
-        if self.quant_noise is not None:
-            x = self.quant_noise(x)
         return x, embed
 
-   def forward(self, src_tokens, src_lengths, return_all_hiddens: bool = False):
+    def forward(self, src_tokens, src_lengths, **unused):
         x, encoder_embedding = self.forward_embedding(src_tokens)
 
         # upsampling B x T x C -> B x T x sC -> B x Ts x C
@@ -200,7 +224,7 @@ class ImputerDecoder(NATransformerDecoder):
     def extract_features(
         self,
         prev_output_tokens,
-        encoder_out=None,
+        encoder_out,
         early_exit=None,
         **unused
     ):
@@ -217,11 +241,16 @@ class ImputerDecoder(NATransformerDecoder):
                 - a dictionary with any model-specific outputs
             the LevenshteinTransformer decoder has full-attention to all generated tokens
         """
-        # embedding
-        x, decoder_padding_mask = self.forward_embedding(prev_output_tokens)
-        # adds encoder features
-        x = x + encoder_out.encoder_out
-
+        # encoder source embeddings
+        x = encoder_out.encoder_out
+        # for ctc, no prior alignment is given.
+        if prev_output_tokens is None:
+            decoder_padding_mask = None
+        else:
+            prior, decoder_padding_mask = self.forward_embedding(prev_output_tokens)
+            # adds encoder features
+            x = x + prior
+        
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
         attn = None
@@ -259,8 +288,11 @@ class ImputerDecoder(NATransformerDecoder):
 def imputer_base_architecture(args):
     args.encoder_embed_path = getattr(args, "encoder_embed_path", None)
     args.encoder_embed_dim = getattr(args, "encoder_embed_dim", 512)
+    args.encoder_ffn_embed_dim = getattr(args, "encoder_ffn_embed_dim", 2048)
+    args.encoder_layers = getattr(args, "encoder_layers", 6)
+    args.encoder_attention_heads = getattr(args, "encoder_attention_heads", 8)
+    args.encoder_normalize_before = getattr(args, "encoder_normalize_before", False)
     args.encoder_learned_pos = getattr(args, "encoder_learned_pos", False)
-
     args.decoder_embed_path = getattr(args, "decoder_embed_path", None)
     args.decoder_embed_dim = getattr(args, "decoder_embed_dim", args.encoder_embed_dim)
     args.decoder_ffn_embed_dim = getattr(
@@ -279,7 +311,7 @@ def imputer_base_architecture(args):
     args.share_decoder_input_output_embed = getattr(
         args, "share_decoder_input_output_embed", False
     )
-    args.share_all_embeddings = getattr(args, "share_all_embeddings", True)
+    args.share_all_embeddings = getattr(args, "share_all_embeddings", False)
     args.no_token_positional_embeddings = getattr(
         args, "no_token_positional_embeddings", False
     )
@@ -292,7 +324,6 @@ def imputer_base_architecture(args):
     args.decoder_input_dim = getattr(args, "decoder_input_dim", args.decoder_embed_dim)
 
     # --- special arguments ---
-    args.no_encoder_positional_embeddings = getattr(args, "no_encoder_positional_embeddings", False)
     args.upsample_scale = getattr(args, "upsample_scale", 2)
 
 @register_model_architecture(
