@@ -20,91 +20,6 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-def non_consecutive_mask(target_tokens, mask_ratio, bos, eos, pad, unk):
-    """Creates con-consecutive masks on batch of tokens.
-    a: mask
-    b: unmask
-    p: pad
-    T: sequence length
-    A: num of mask
-    B: num of unmask, A+B+num(p)=T
-
-    In order to do this, we first layout the unmasked tokens:
-    bbbbbbb
-    Then, we insert masks in the gaps, at most 1 each gap
-    bbabbbabab 
-    Therefore, we have C(B+1, A) combinations of valid non-consecutive locations.
-
-    [Implementation]
-    Assume ratio=0.3, T=13, where last 3 is pad. 
-
-    1. sample scores, which is used to determine mask locations (top-A non-consecutive locations)
-    bbbbbbb------
-
-    2. only select indices ranging from 0 to B
-    bbbbbbbaaappp -> bbbbbbb------
-    (- means large number, which will be sorted last)
-
-    3. sort by the scores
-    bbbbbbb------
-
-    4. only keep the top A locations (now we have one of the valid combinations)
-    aaa(bbbb------)
-
-    suppose after sorting they're (a1, a2, a3), we know that 0 <= (a1, a2, a3) <= B
-
-    5. Now we transform to actual indices in the original sequence by adding a cumsum
-    (a1, a2, a3) + (0, 1, 2) = (a1, a2+1, a3+2)
-    for example, we will transform (2,5,6) to (2,6,8) in following combination:
-    0 1 2 3 4 5 6 7    (insertion locations)
-     b bab b babab
-     0 123 4 56789     (masking locations)
-    
-
-    """
-    # large number gauranteed to be sorted to last
-    _large_num = target_tokens.shape[1] * 10
-    # we don't want to mask pad or eos
-    target_masks = target_tokens.ne(pad) & target_tokens.ne(eos)
-    # create random sampled scores, which is later used for selecting mask locations
-    target_score = target_tokens.clone().float().uniform_()
-    # get length for each example in the batch
-    target_length = target_masks.sum(1).float()
-
-    # check ratio s.t. A <= B+1, otherwise indexing error will occur because of _large_num
-    _min_len = target_length.min().item() 
-    assert mask_ratio <= 0.5 #(_min_len+1)/(2*_min_len)
-
-    # get num of masks & unmasks for each example in the batch
-    mask_nums = (target_length * mask_ratio).long() + 1
-    unmask_nums = target_length - mask_nums + 1
-    # create a binary mask where 1 means unmasks
-    unmask_cutoff = new_arange(target_score) < unmask_nums[:, None]
-
-    # make indices larger than B be sorted last -> we will only sample from 0~B
-    target_score.masked_fill_(~unmask_cutoff, _large_num)
-
-    # sorting for the top locations
-    _, target_rank = target_score.sort(1)
-
-    # create a binary mask where 1 means masks
-    mask_cutoff = new_arange(target_score) < mask_nums[:, None]
-    
-    # sort the desired indices while discarding the rest
-    mask_pre,_ = target_rank.masked_fill(~mask_cutoff, _large_num).sort(1)
-    # add the cumsum to indices to transform to sequence indices
-    mask_mid = mask_pre + new_arange(mask_pre)
-    # replace the discarded part with duplicated first column -> ensures correctness.
-    duped = mask_mid[:,:1].expand(*mask_mid.shape)
-    mask_fin = mask_mid * mask_cutoff + duped * (~mask_cutoff)
-
-    # scatter 1 to locations indicated by mask_fin, then fill
-    prev_target_tokens = target_tokens.scatter(1, mask_fin, unk)
-    return prev_target_tokens
-
-
-
-
 @register_task('translation_lev_bleu')
 class TranslationLevenshteinBLEUTask(TranslationTask):
     """
@@ -112,7 +27,6 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
     """
     def __init__(self, args, src_dict, tgt_dict):
         super().__init__(args, src_dict, tgt_dict)
-        self.mask_ratio = args.mask_ratio
 
     @staticmethod
     def add_args(parser):
@@ -121,10 +35,7 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
         parser.add_argument(
             '--noise',
             default='no_noise',
-            choices=['random_mask', 'no_noise', 'full_mask', 'non_con_mask'])
-        parser.add_argument(
-            '--mask-ratio',
-            default=0.18, type=float)
+            choices=['random_mask', 'no_noise', 'full_mask'])
 
     # inherit from translationtask
     # def load_dataset(self, split, epoch=1, combine=False, **kwargs):
@@ -160,12 +71,6 @@ class TranslationLevenshteinBLEUTask(TranslationTask):
 
         if self.args.noise == 'random_mask':
             return _random_mask(target_tokens)
-        elif self.args.noise == 'non_con_mask':
-            return non_consecutive_mask(
-                target_tokens,
-                self.mask_ratio,
-                pad=pad, bos=bos, eos=eos, unk=unk
-            )
         elif self.args.noise == 'full_mask':
             return _full_mask(target_tokens)
         elif self.args.noise == 'no_noise':
