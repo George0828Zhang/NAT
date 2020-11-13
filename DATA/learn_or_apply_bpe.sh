@@ -12,8 +12,44 @@ if [[ -z "$SPM_MODEL" ]]; then
 else
     if [[ "$SPM_MODEL" == "Current" ]]; then
         echo "Didn't provide SPM model, learn on current dataset"
-        echo "Not implemented sorry."
-        exit
+        SPM_PREFIX=$CACHE/prep/spm
+        SPM_MODEL=$SPM_PREFIX.model
+        BPE_TRAIN=$CACHE/prep/all.bpe-train
+
+        if [ -f $SPM_MODEL ]; then
+            echo "SPM model: $SPM_MODEL exists, skip learning"
+        else
+            if [ -f $BPE_TRAIN ]; then
+                echo "$BPE_TRAIN found, skipping concat."
+            else
+                for l in $SRCLANG $TGTLANG; do \
+                    train=$CACHE/prep/train.$l
+                    valid=$CACHE/prep/valid.$l
+                    default=1000000
+                    total=$(cat $train $valid | wc -l)
+                    echo "lang $l total: $total."
+                    if [ "$total" -gt "$default" ]; then
+                        cat $train $valid | \
+                        shuf -r -n $default >> $BPE_TRAIN
+                    else
+                        cat $train $valid >> $BPE_TRAIN
+                    fi                    
+                done
+            fi
+
+            echo "spm_train on ${BPE_TRAIN}..."
+            spm_train --input=$BPE_TRAIN \
+                --model_prefix=$SPM_PREFIX \
+                --vocab_size=$N_TOKENS \
+                --character_coverage=1.0 \
+                --model_type=unigram \
+                --normalization_rule_name=nmt_nfkc_cf
+
+            mkdir -p $OUTDIR
+            cp $SPM_MODEL $OUTDIR/spm.model
+            #######################################################
+        fi
+
     else
         if [[ ! -f $SPM_MODEL ]]; then
             echo "SPM model: $SPM_MODEL not found!"
