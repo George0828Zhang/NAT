@@ -23,8 +23,10 @@ from fairseq.models.nat import (
     NATransformerDecoder,
     FairseqNATModel
 )
-from fairseq.models.fairseq_encoder import EncoderOut
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
+from fairseq.models.fairseq_encoder import EncoderOut
+from fairseq import utils
+from fairseq.iterative_refinement_generator import DecoderOut
 
 @register_model("imputer")
 class ImputerModel(NATransformerModel):
@@ -32,6 +34,17 @@ class ImputerModel(NATransformerModel):
     Implementing the Imputer model from 
     Imputer: Sequence Modelling via Imputation and Dynamic Programming
     """
+    def __init__(self, args, encoder, decoder):
+        super().__init__(args, encoder, decoder)
+        self.tgt_dict = decoder.dictionary
+        self.bos = decoder.dictionary.bos()
+        self.eos = decoder.dictionary.eos()
+        self.pad = decoder.dictionary.pad()
+        self.unk = decoder.dictionary.unk()
+
+        self.blank_idx = self.bos
+
+        self.ensemble_models = None
 
     @staticmethod
     def add_args(parser):
@@ -56,74 +69,44 @@ class ImputerModel(NATransformerModel):
             encoder.apply(init_bert_params)
         return encoder
 
-    # def forward(
-    #     self, src_tokens, src_lengths, prev_output_tokens, tgt_tokens, **kwargs
-    # ):
-    #     raise NotImplementedError("TODO")
-    #     # encoding
-    #     encoder_out = self.encoder(src_tokens, src_lengths=src_lengths, **kwargs)
-        
-    #     # decoding
-    #     word_ins_out = self.decoder(
-    #         normalize=False,
-    #         prev_output_tokens=prev_output_tokens,
-    #         encoder_out=encoder_out)
-    #     word_ins_mask = prev_output_tokens.eq(self.unk)
+    def initialize_output_tokens(self, encoder_out, src_tokens):
+        # length prediction
+        enc_feats = encoder_out.encoder_out  # T x B x C
+        src_masks = encoder_out.encoder_padding_mask  # B x T or None
+        if src_masks is None:
+            src_lengs = enc_feats.new_ones(enc_feats.size(1)).fill_(
+                enc_feats.size(0)
+            )
+        else:
+            src_lengs = (~src_masks).transpose(0, 1).type_as(enc_feats).sum(0)
+        src_lengs = src_lengs.long()
 
-    #     return {
-    #         "word_ins": {
-    #             "out": word_ins_out, "tgt": tgt_tokens,
-    #             "mask": word_ins_mask, "ls": self.args.label_smoothing,
-    #             "nll_loss": True
-    #         },
-    #         "length": {
-    #             "out": length_out, "tgt": length_tgt,
-    #             "factor": self.decoder.length_loss_factor
-    #         }
-    #     }
+        length_tgt = src_lengs*2
 
-    # def forward_decoder(self, decoder_out, encoder_out, decoding_format=None, **kwargs):
-    #     raise NotImplementedError("TODO")
-    #     step = decoder_out.step
-    #     max_step = decoder_out.max_step
+        max_length = length_tgt.clamp_(min=2).max()
+        idx_length = utils.new_arange(src_tokens, max_length)
 
-    #     output_tokens = decoder_out.output_tokens
-    #     output_scores = decoder_out.output_scores
-    #     history = decoder_out.history
+        initial_output_tokens = src_tokens.new_zeros(
+            src_tokens.size(0), max_length
+        ).fill_(self.pad)
+        initial_output_tokens.masked_fill_(
+            idx_length[None, :] < length_tgt[:, None], self.unk
+        )
+        initial_output_tokens[:, 0] = self.bos
+        initial_output_tokens.scatter_(1, length_tgt[:, None] - 1, self.eos)
 
-    #     # execute the decoder
-    #     output_masks = output_tokens.eq(self.unk)
-    #     _scores, _tokens = self.decoder(
-    #         normalize=True,
-    #         prev_output_tokens=output_tokens,
-    #         encoder_out=encoder_out,
-    #     ).max(-1)
-    #     output_tokens.masked_scatter_(output_masks, _tokens[output_masks])
-    #     output_scores.masked_scatter_(output_masks, _scores[output_masks])
+        initial_output_scores = initial_output_tokens.new_zeros(
+            *initial_output_tokens.size()
+        ).type_as(encoder_out.encoder_out)
 
-    #     if history is not None:
-    #         history.append(output_tokens.clone())
-
-    #     # skeptical decoding (depend on the maximum decoding steps.)
-    #     if (step + 1) < max_step:
-    #         skeptical_mask = _skeptical_unmasking(
-    #             output_scores, output_tokens.ne(self.pad), 1 - (step + 1) / max_step
-    #         )
-
-    #         output_tokens.masked_fill_(skeptical_mask, self.unk)
-    #         output_scores.masked_fill_(skeptical_mask, 0.0)
-
-    #         if history is not None:
-    #             history.append(output_tokens.clone())
-
-    #     return decoder_out._replace(
-    #         output_tokens=output_tokens,
-    #         output_scores=output_scores,
-    #         attn=None,
-    #         history=history
-    #     )
-
-    
+        return DecoderOut(
+            output_tokens=initial_output_tokens,
+            output_scores=initial_output_scores,
+            attn=None,
+            step=0,
+            max_step=0,
+            history=None,
+        )
 
 class ImputerEncoder(FairseqEncoder):
     """
@@ -185,9 +168,12 @@ class ImputerEncoder(FairseqEncoder):
         B, T, C = x.size()
         x = self.upsampler(x).view(B, T*self.upsample_scale, C)
 
+        # B x T x C -> T x B x C (to conform to transformer encoder convention)
+        x = x.transpose(0, 1)
+
         encoder_padding_mask = src_tokens.eq(self.padding_idx)
         return EncoderOut(
-            encoder_out=x,  # B x T x C
+            encoder_out=x,  # T x B x C
             encoder_padding_mask=encoder_padding_mask,  # B x T
             encoder_embedding=encoder_embedding,  # B x T x C
             encoder_states=None,
@@ -243,6 +229,10 @@ class ImputerDecoder(NATransformerDecoder):
         """
         # encoder source embeddings
         x = encoder_out.encoder_out
+
+        # T x B x C -> B x T x C
+        x = x.transpose(0, 1)
+
         # for ctc, no prior alignment is given.
         if prev_output_tokens is None:
             decoder_padding_mask = None

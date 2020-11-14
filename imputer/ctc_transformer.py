@@ -30,54 +30,16 @@ class CTCTransformerModel(ImputerModel):
             normalize=False,
             prev_output_tokens=None, # no prior alignment available
             encoder_out=encoder_out)
-            
+
         return {
-            "logits": word_ins_out,
-            "src_lengths": src_lengths * self.encoder.upsample_scale
+            "word_ins": {
+                "out": word_ins_out,
+                "src_lengths": src_lengths * self.encoder.upsample_scale
+            }
         }
 
-    def forward_decoder(self, decoder_out, encoder_out, decoding_format=None, **kwargs):
-        raise NotImplementedError("TODO")
-        # step = decoder_out.step
-        # max_step = decoder_out.max_step
-
-        # output_tokens = decoder_out.output_tokens
-        # output_scores = decoder_out.output_scores
-        # history = decoder_out.history
-
-        # # execute the decoder
-        # output_masks = output_tokens.eq(self.unk)
-        # _scores, _tokens = self.decoder(
-        #     normalize=True,
-        #     prev_output_tokens=output_tokens,
-        #     encoder_out=encoder_out,
-        # ).max(-1)
-        # output_tokens.masked_scatter_(output_masks, _tokens[output_masks])
-        # output_scores.masked_scatter_(output_masks, _scores[output_masks])
-
-        # if history is not None:
-        #     history.append(output_tokens.clone())
-
-        # # skeptical decoding (depend on the maximum decoding steps.)
-        # if (step + 1) < max_step:
-        #     skeptical_mask = _skeptical_unmasking(
-        #         output_scores, output_tokens.ne(self.pad), 1 - (step + 1) / max_step
-        #     )
-
-        #     output_tokens.masked_fill_(skeptical_mask, self.unk)
-        #     output_scores.masked_fill_(skeptical_mask, 0.0)
-
-        #     if history is not None:
-        #         history.append(output_tokens.clone())
-
-        # return decoder_out._replace(
-        #     output_tokens=output_tokens,
-        #     output_scores=output_scores,
-        #     attn=None,
-        #     history=history
-        # )
-
-    
+    # directly use argmax decoding (inherited ) 
+    # def forward_decoder(self, decoder_out, encoder_out, decoding_format=None, **kwargs):
 
 
 @register_model_architecture("ctc_transformer", "ctc_transformer")

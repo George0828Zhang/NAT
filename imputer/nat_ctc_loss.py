@@ -18,9 +18,9 @@ from fairseq.criterions import (
 class NACTCCriterion(FairseqCriterion):
     def __init__(self, task, zero_infinity, sentence_avg, remove_bpe):
         super().__init__(task)
-        self.blank_idx = task.target_dictionary.bos()
-        self.pad_idx = task.target_dictionary.pad()
-        self.eos_idx = task.target_dictionary.eos()
+        # self.blank_idx = task.target_dictionary.bos()
+        # self.pad_idx = task.target_dictionary.pad()
+        # self.eos_idx = task.target_dictionary.eos()
         self.post_process = remove_bpe if remove_bpe else "letter"
 
         self.zero_infinity = zero_infinity
@@ -43,15 +43,22 @@ class NACTCCriterion(FairseqCriterion):
             pass  # this option might have been added from eval args        
 
     def forward(self, model, sample, reduce=True):
+        pad_idx = model.pad
+        eos_idx = model.eos
+        blank_idx = model.blank_idx
+
         net_output = model(**sample["net_input"])
+        model_logits, input_lengths = (
+            net_output["word_ins"]["out"],
+            net_output["word_ins"]["src_lengths"]
+        )
+
         lprobs = utils.log_softmax(
-            net_output["logits"], dim=-1
+            model_logits, dim=-1
         ).transpose(1,0).contiguous()  # (T, B, C) for ctc loss
 
-        input_lengths = net_output["src_lengths"]
-
-        pad_mask = (sample["target"] != self.pad_idx) & (
-            sample["target"] != self.eos_idx
+        pad_mask = (sample["target"] != pad_idx) & (
+            sample["target"] != eos_idx
         )
         targets_flat = sample["target"].masked_select(pad_mask)
         target_lengths = pad_mask.long().sum(-1)
@@ -62,14 +69,12 @@ class NACTCCriterion(FairseqCriterion):
                 targets_flat,
                 input_lengths,
                 target_lengths,
-                blank=self.blank_idx,
+                blank=blank_idx,
                 reduction="sum",
                 zero_infinity=self.zero_infinity,
             )
 
-        ntokens = (
-            sample["ntokens"] if "ntokens" in sample else target_lengths.sum().item()
-        )
+        ntokens = target_lengths.sum().item()
 
         sample_size = sample["target"].size(0) if self.sentence_avg else ntokens
         logging_output = {
