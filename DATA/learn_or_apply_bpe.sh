@@ -38,10 +38,14 @@ else
             fi
 
             echo "spm_train on ${BPE_TRAIN}..."
+            ccvg=1.0
+            if [[ $SRCLANG == "zh" ]] || [[ $TGTLANG == "zh" ]]; then
+                ccvg=0.9995
+            fi
             spm_train --input=$BPE_TRAIN \
                 --model_prefix=$SPM_PREFIX \
                 --vocab_size=$N_TOKENS \
-                --character_coverage=1.0 \
+                --character_coverage=$ccvg \
                 --model_type=unigram \
                 --normalization_rule_name=nmt_nfkc_cf
 
