@@ -2,17 +2,19 @@
 # config
 export PREFIX=/media/george/Data
 export DATABIN=$(pwd)/data-bin
-export CONFIG=config/multi30k
-export SRCLANG=de
-export TGTLANG=en
-export WORKERS=4
+export CONFIG=config/wmt17.enzh
+export SRCLANG=en
+export TGTLANG=zh
+export WORKERS=8
 export BPE_TOKENS=4000
 
 # setup path
 source $CONFIG/path.sh
 
 # check
-if [[ -d $OUTDIR ]]; then
+if [[ "$1" == "clean" ]]; then
+    rm -rf $CACHE $OUTDIR
+elif [[ -d $OUTDIR ]]; then
     echo "$OUTDIR already exists. Please change the OUTDIR or remove $OUTDIR"
     exit 1
 fi

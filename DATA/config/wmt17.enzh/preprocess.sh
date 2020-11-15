@@ -9,12 +9,41 @@ lang=zh-en
 
 mkdir -p $prep $ready
 
+cd $PREFIX
+echo 'Cloning Moses github repository (for tokenization scripts)...'
+git clone https://github.com/moses-smt/mosesdecoder.git
+
+SCRIPTS=$(pwd)/mosesdecoder/scripts
+REM_NON_PRINT_CHAR=$SCRIPTS/tokenizer/remove-non-printing-char.perl
+CLEAN=$SCRIPTS/training/clean-corpus-n.perl
+
 cd $raw
 
-echo "pre-processing train/valid data..."
+echo "pre-processing train data..."
 for l in $src $tgt; do
-    awk '{if (NR%100 == 0)  print $0; }' $raw/training/news-commentary-v12.$lang.$l > $prep/valid.$l
-    awk '{if (NR%100 != 0)  print $0; }' $raw/training/news-commentary-v12.$lang.$l > $prep/train.$l
+    f=news-commentary-v12.$lang.$l
+    if [ -f $prep/train.dirty.$l ]; then
+        echo "$raw/training/$f found, skipping tokenizer"
+    else
+        cat $raw/training/$f | \
+            $REM_NON_PRINT_CHAR | \
+            python -m jieba -d > $prep/train.dirty.$l
+    fi
+done
+perl $CLEAN -ratio 9 $prep/train.dirty $src $tgt $prep/train 1 250 # 9 is default
+
+echo "pre-processing valid data..."
+for l in $src $tgt; do
+    if [ "$l" == "$src" ]; then
+        t="src"
+    else
+        t="ref"
+    fi
+    grep '<seg id' $raw/dev/newsdev2017-$src$tgt-$t.$l.sgm | \
+        sed -e 's/<seg id="[0-9]*">\s*//g' | \
+        sed -e 's/\s*<\/seg>\s*//g' | \
+        sed -e "s/\’/\'/g" > $prep/valid.$l
+    echo ""
 done
 
 echo "pre-processing test data..."
@@ -24,7 +53,7 @@ for l in $src $tgt; do
     else
         t="ref"
     fi
-    grep '<seg id' $raw/newstest2017-enzh-$t.$l.sgm | \
+    grep '<seg id' $raw/newstest2017-$src$tgt-$t.$l.sgm | \
         sed -e 's/<seg id="[0-9]*">\s*//g' | \
         sed -e 's/\s*<\/seg>\s*//g' | \
         sed -e "s/\’/\'/g" > $prep/test.$l

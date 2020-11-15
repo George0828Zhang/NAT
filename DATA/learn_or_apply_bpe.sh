@@ -50,7 +50,7 @@ else
                 --normalization_rule_name=nmt_nfkc_cf
 
             mkdir -p $OUTDIR
-            cp $SPM_MODEL $OUTDIR/spm.model
+            cp $SPM_MODEL $OUTDIR/$(basename $SPM_MODEL)
             #######################################################
         fi
 
