@@ -25,9 +25,14 @@ for l in $src $tgt; do
     if [ -f $prep/train.dirty.$l ]; then
         echo "$raw/training/$f found, skipping tokenizer"
     else
-        cat $raw/training/$f | \
-            $REM_NON_PRINT_CHAR | \
-            python -m jieba -d > $prep/train.dirty.$l
+        if [[ $l == "zh" ]]; then            
+            cat $raw/training/$f | \
+                $REM_NON_PRINT_CHAR | \
+                python -m jieba -d > $prep/train.dirty.$l
+        else
+            cat $raw/training/$f | \
+                $REM_NON_PRINT_CHAR > $prep/train.dirty.$l
+        fi
     fi
 done
 perl $CLEAN -ratio 9 $prep/train.dirty $src $tgt $prep/train 1 250 # 9 is default
@@ -42,7 +47,16 @@ for l in $src $tgt; do
     grep '<seg id' $raw/dev/newsdev2017-$src$tgt-$t.$l.sgm | \
         sed -e 's/<seg id="[0-9]*">\s*//g' | \
         sed -e 's/\s*<\/seg>\s*//g' | \
-        sed -e "s/\’/\'/g" > $prep/valid.$l
+        sed -e "s/\’/\'/g" > $prep/valid.raw.$l
+
+    if [[ $l == "zh" ]]; then
+        cat $prep/valid.raw.$l | \
+            $REM_NON_PRINT_CHAR | \
+            python -m jieba -d > $prep/valid.$l
+    else
+        cat $prep/valid.raw.$l | \
+            $REM_NON_PRINT_CHAR > $prep/valid.$l
+    fi
     echo ""
 done
 
@@ -56,6 +70,15 @@ for l in $src $tgt; do
     grep '<seg id' $raw/newstest2017-$src$tgt-$t.$l.sgm | \
         sed -e 's/<seg id="[0-9]*">\s*//g' | \
         sed -e 's/\s*<\/seg>\s*//g' | \
-        sed -e "s/\’/\'/g" > $prep/test.$l
+        sed -e "s/\’/\'/g" > $prep/test.raw.$l
+
+    if [[ $l == "zh" ]]; then
+        cat $prep/test.raw.$l | \
+            $REM_NON_PRINT_CHAR | \
+            python -m jieba -d > $prep/test.$l
+    else
+        cat $prep/test.raw.$l | \
+            $REM_NON_PRINT_CHAR > $prep/test.$l
+    fi
     echo ""
 done

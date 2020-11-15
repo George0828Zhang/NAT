@@ -6,4 +6,5 @@ export CACHE=$PREFIX/$DATASET
 export OUTDIR=$DATABIN/$DATASET
 
 export SPM_MODEL="Current"
-export BINARIZEARGS="--joined-dictionary --bpe sentencepiece"
+export BINARIZEARGS="--only-source --bpe sentencepiece" #--joined-dictionary
+export ONLYSRC="True"

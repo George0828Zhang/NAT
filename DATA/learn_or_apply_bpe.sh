@@ -22,7 +22,11 @@ else
             if [ -f $BPE_TRAIN ]; then
                 echo "$BPE_TRAIN found, skipping concat."
             else
-                for l in $SRCLANG $TGTLANG; do \
+                langs=($SRCLANG)
+                if [[ -z "$ONLYSRC" ]]; then
+                    langs+=($TGTLANG)
+                fi
+                for l in $langs; do \
                     train=$CACHE/prep/train.$l
                     valid=$CACHE/prep/valid.$l
                     default=1000000
