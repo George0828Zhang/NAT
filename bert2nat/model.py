@@ -43,10 +43,10 @@ class BERT2NATransformerModel(NATransformerModel):
         self.hint_loss_factor = args.hint_loss_factor
         self.teacher = torch.hub.load('pytorch/fairseq', 'xlmr.base').model.encoder
         #torch.hub.load('pytorch/fairseq', 'roberta.base').model
-        self.freeze_teacher = getattr(args, "freeze_teacher", False)
-        if self.freeze_teacher:
-            logger.warning("Teacher weights will be freezed!")
-            freeze_module_params(self.teacher)
+        # self.freeze_teacher = getattr(args, "freeze_teacher", False)
+        # if self.freeze_teacher:
+        #     logger.warning("Teacher weights will be freezed!")
+        #     freeze_module_params(self.teacher)
 
         embed_dim = encoder.embed_tokens.embedding_dim
         teacher_embed_dim = self.teacher.sentence_encoder.embed_tokens.embedding_dim
@@ -55,6 +55,38 @@ class BERT2NATransformerModel(NATransformerModel):
         if getattr(args, "apply_bert_init", False):
             for m in (self.teacher_proj,):
                 m.apply(init_bert_params)
+
+    def state_dict(self, *args, **kwargs):
+        new_state_dict = {}
+        state_dict = super().state_dict(*args, **kwargs)
+        for layer_name in state_dict.keys():
+            match = re.search(r"^teacher\.", layer_name)
+            if not match:
+                new_state_dict[layer_name] = state_dict[layer_name]
+                continue
+            # otherwise, layer should be pruned.
+        return new_state_dict
+
+    def load_state_dict(self, state_dict, strict=True, args=None):
+        """Copies parameters and buffers from *state_dict* into this module and
+        its descendants.
+
+        Overrides the method in :class:`nn.Module`. Compared with that method
+        this additionally "upgrades" *state_dicts* from old checkpoints.
+        """
+        
+        """Overrides fairseq_model.py
+
+        """
+        logger.warning("Ignoring teacher weights!")
+        cur = self.state_dict()
+        for param in state_dict:
+            if re.match(r"^teacher\.", param) is None:
+                cur[param] = state_dict[param]
+        state_dict = cur
+
+        return super().load_state_dict(state_dict, strict=strict, args=args)
+
 
     @staticmethod
     def add_args(parser):
