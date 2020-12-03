@@ -69,15 +69,13 @@ class BERT2NATransformerModel(NATransformerModel):
         return new_state_dict
 
     def load_state_dict(
-        self, *args, **kwargs
-        # self,
-        # state_dict,
-        # strict=True,
-        # model_cfg: Optional[DictConfig] = None,
-        # args: Optional[Namespace] = None,
+        self,
+        state_dict,
+        strict=True,
+        **unused,
     ):
         new_state_dict = {}
-        cur_state_dict = super().state_dict(*args, **kwargs) # use super or current?
+        cur_state_dict = super().state_dict() # use super or current?
         for layer_name in cur_state_dict.keys():
             match = re.search(r"^teacher\.", layer_name)
             if not match:
