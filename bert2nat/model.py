@@ -47,6 +47,7 @@ class BERT2NATransformerModel(NATransformerModel):
         # if self.freeze_teacher:
         #     logger.warning("Teacher weights will be freezed!")
         #     freeze_module_params(self.teacher)
+        freeze_module_params(self.teacher) # if requires_grad not turned off, optimizer states will be saved even if not being trained.
 
         embed_dim = encoder.embed_tokens.embedding_dim
         teacher_embed_dim = self.teacher.sentence_encoder.embed_tokens.embedding_dim
@@ -66,26 +67,6 @@ class BERT2NATransformerModel(NATransformerModel):
                 continue
             # otherwise, layer should be pruned.
         return new_state_dict
-
-    def load_state_dict(self, state_dict, strict=True, args=None):
-        """Copies parameters and buffers from *state_dict* into this module and
-        its descendants.
-
-        Overrides the method in :class:`nn.Module`. Compared with that method
-        this additionally "upgrades" *state_dicts* from old checkpoints.
-        """
-        
-        """Overrides fairseq_model.py
-
-        """
-        logger.warning("Ignoring teacher weights!")
-        cur = self.state_dict()
-        for param in state_dict:
-            if re.match(r"^teacher\.", param) is None:
-                cur[param] = state_dict[param]
-        state_dict = cur
-
-        return super().load_state_dict(state_dict, strict=strict, args=args)
 
 
     @staticmethod
