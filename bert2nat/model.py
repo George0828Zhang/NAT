@@ -68,6 +68,24 @@ class BERT2NATransformerModel(NATransformerModel):
             # otherwise, layer should be pruned.
         return new_state_dict
 
+    def load_state_dict(
+        self, *args, **kwargs
+        # self,
+        # state_dict,
+        # strict=True,
+        # model_cfg: Optional[DictConfig] = None,
+        # args: Optional[Namespace] = None,
+    ):
+        new_state_dict = {}
+        cur_state_dict = super().state_dict(*args, **kwargs) # use super or current?
+        for layer_name in cur_state_dict.keys():
+            match = re.search(r"^teacher\.", layer_name)
+            if not match:
+                new_state_dict[layer_name] = state_dict[layer_name] # load other params normally
+            else:
+                new_state_dict[layer_name] = cur_state_dict[layer_name]
+        return super().load_state_dict(new_state_dict, strict)
+
 
     @staticmethod
     def add_args(parser):
