@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 TASK=bert2nat
-# DATA=../DATA/data-bin/iwslt16.gpt2.en-de.distill
-DATA=../DATA/data-bin/iwslt16.en-de.xlmr
+DATA=../DATA/data-bin/wmt14.en-de
+TEACHER=/media/george/Data/xlmr.base/trimmed_nomask
 
 mkdir -p checkpoints/$TASK
 mkdir -p logdir/$TASK
@@ -11,10 +11,12 @@ export CUDA_VISIBLE_DEVICES=0
 fairseq-train --user-dir .. \
     --task translation_lev_bleu --noise no_noise \
     -s en -t de \
-    --max-tokens 2000 \
+    --max-tokens 1000 \
     --max-tokens-valid 1024 \
     --update-freq 4 \
     --arch bert2nat_iwslt16 \
+    --teacher-dir $TEACHER \
+    --hint-from-layer 8 \
     --src-embedding-copy \
     --apply-bert-init \
     --pred-length-offset \
@@ -37,7 +39,8 @@ fairseq-train --user-dir .. \
     --eval-tokenized-bleu \
     --eval-bleu-remove-bpe \
     --eval-bleu-print-samples \
-    --keep-last-epochs 2 \
+    --keep-last-epochs 1 \
+    --save-interval-updates 10 \
     --best-checkpoint-metric bleu --maximize-best-checkpoint-metric \
     --save-dir checkpoints/$TASK \
     --tensorboard-logdir logdir/$TASK \

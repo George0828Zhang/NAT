@@ -17,6 +17,7 @@ from fairseq.models.nat import (
     CMLMNATransformerModel,
     cmlm_base_architecture
 )
+from fairseq.models.roberta import XLMRModel
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
 
 import re
@@ -34,6 +35,24 @@ def freeze_module_params(m):
         for p in m.parameters():
             p.requires_grad = False
 
+def load_teacher(
+    model_name_or_path,
+    checkpoint_file="model.pt",
+    data_name_or_path=".",
+    bpe="sentencepiece",
+    **kwargs
+):
+    from fairseq import hub_utils
+    x = hub_utils.from_pretrained(
+        model_name_or_path,
+        checkpoint_file,
+        data_name_or_path,
+        archive_map=XLMRModel.hub_models(),
+        bpe=bpe,
+        load_checkpoint_heads=True, #False,
+        **kwargs,
+    )
+    return x["models"][0].encoder
 
 # class BERT2NATransformerModel(CMLMNATransformerModel):
 @register_model("bert2nat")
@@ -41,7 +60,10 @@ class BERT2NATransformerModel(NATransformerModel):
     def __init__(self, args, encoder, decoder):
         super().__init__(args, encoder, decoder)
         self.hint_loss_factor = args.hint_loss_factor
-        self.teacher = torch.hub.load('pytorch/fairseq', 'xlmr.base').model.encoder
+        self.hint_from_layer = args.hint_from_layer
+        # self.teacher = torch.hub.load('pytorch/fairseq', 'xlmr.base').model.encoder
+        self.teacher =load_teacher(args.teacher_dir, checkpoint_file='model.pt')
+        
         #torch.hub.load('pytorch/fairseq', 'roberta.base').model
         # self.freeze_teacher = getattr(args, "freeze_teacher", False)
         # if self.freeze_teacher:
@@ -88,8 +110,11 @@ class BERT2NATransformerModel(NATransformerModel):
     @staticmethod
     def add_args(parser):
         NATransformerModel.add_args(parser)
-        parser.add_argument('--freeze-teacher', action='store_true',
-                help='whether to freeze teacher.')
+        # parser.add_argument('--freeze-teacher', action='store_true',
+        #         help='whether to freeze teacher.')
+        parser.add_argument("--teacher-dir", type=str, required=True, help="The pre-trained XLMR model directory.")
+        parser.add_argument("--hint-from-layer", type=int, default=8, help="The layer index in teacher model from which the hint came.")
+
         parser.add_argument("--hint-loss-factor",
             default=1.,
             type=float,
@@ -109,7 +134,7 @@ class BERT2NATransformerModel(NATransformerModel):
                 return_all_hiddens=True
             )[1]['inner_states'] # 13 hidden layers, (T,B,768)
             # hints = hints[-2] # get second to last layer
-            hints = hints[8][src_max_len:,...] # get 8-th layer, only target reps
+            hints = hints[self.hint_from_layer][src_max_len:,...] # get 8-th layer, only target reps
 
         # project to same dim
         hints = self.teacher_proj(hints).transpose(1,0).contiguous() # (B,T,h)
