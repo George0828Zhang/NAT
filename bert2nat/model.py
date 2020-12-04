@@ -49,7 +49,7 @@ def load_teacher(
         data_name_or_path,
         archive_map=XLMRModel.hub_models(),
         bpe=bpe,
-        load_checkpoint_heads=True, #False,
+        load_checkpoint_heads=False,
         **kwargs,
     )
     return x["models"][0].encoder
@@ -61,16 +61,16 @@ class BERT2NATransformerModel(NATransformerModel):
         super().__init__(args, encoder, decoder)
         self.hint_loss_factor = args.hint_loss_factor
         self.hint_from_layer = args.hint_from_layer
-        # self.teacher = torch.hub.load('pytorch/fairseq', 'xlmr.base').model.encoder
-        self.teacher = load_teacher(args.teacher_dir, checkpoint_file='model.pt')
+        self.teacher = load_teacher(
+            args.teacher_dir, 
+            checkpoint_file='model.pt',
+        )
+        # if args.max_source_positions + args.max_target_positions > self.teacher.max_positions():
+        #     logger.warning("maximum possible source+target tokens exceeds maximum length: {} > {}. might lead to error.".format(
+        #                 args.max_source_positions + args.max_target_positions, self.teacher.max_positions()
+        #             ))
         logger.info(f"Vocab size: teacher {self.teacher.sentence_encoder.vocab_size} nat {len(decoder.dictionary)}")
-        assert self.teacher.sentence_encoder.vocab_size == len(decoder.dictionary)
         
-        #torch.hub.load('pytorch/fairseq', 'roberta.base').model
-        # self.freeze_teacher = getattr(args, "freeze_teacher", False)
-        # if self.freeze_teacher:
-        #     logger.warning("Teacher weights will be freezed!")
-        #     freeze_module_params(self.teacher)
         freeze_module_params(self.teacher) # if requires_grad not turned off, optimizer states will be saved even if not being trained.
 
         embed_dim = encoder.embed_tokens.embedding_dim
@@ -127,8 +127,23 @@ class BERT2NATransformerModel(NATransformerModel):
         # get hints
         with torch.no_grad():            
             self.teacher.eval()
-            src_max_len = src_tokens.size(1)
-            teacher_tokens = torch.cat((src_tokens, tgt_tokens), dim=1)
+            total_len = src_tokens.size(1) + tgt_tokens.size(1)
+            if tgt_tokens.size(-1) > self.teacher.max_positions():
+                raise ValueError(
+                    "target tokens exceeds maximum length: {} > {}".format(
+                        tgt_tokens.size(-1), self.teacher.max_positions()
+                    )
+                )
+            elif total_len > self.teacher.max_positions():
+                logger.warning("tokens exceeds maximum length: {} > {}. trimming source tokens.".format(
+                        total_len, self.teacher.max_positions()
+                    ))
+                src_max_len = self.teacher.max_positions() - tgt_tokens.size(-1)
+                src_tokens = src_tokens[:,:src_max_len]                
+                teacher_tokens = torch.cat((src_tokens, tgt_tokens), dim=1)
+            else:
+                src_max_len = src_tokens.size(1)
+                teacher_tokens = torch.cat((src_tokens, tgt_tokens), dim=1)
 
             hints = self.teacher(
                 teacher_tokens, 
@@ -207,6 +222,8 @@ class BERT2NATransformerModel(NATransformerModel):
 
 @register_model_architecture("bert2nat", "bert2nat")
 def bert2nat(args):
+    # make compatible with roberta/xlmr
+    args.max_target_positions = 510
     nonautoregressive_transformer_base_architecture(args)
 
 
