@@ -9,11 +9,12 @@ import pdb
 
 from fairseq.data import Dictionary
 
-def load_dict(langs: List[str], path: str) -> Dictionary:
+def load_dict(langs: List[str], path: str, mask: bool) -> Dictionary:
     d = Dictionary.load(path)
     for l in langs:
         d.add_symbol(f"[{l}]")
-    d.add_symbol("<mask>")
+    if mask:
+        d.add_symbol("<mask>")
     return d
 
 
@@ -28,8 +29,8 @@ def main() -> None:
     args = parser.parse_args()
 
     langs = [] #args.langs.split(",")
-    pre_dict = load_dict(langs, os.path.join(args.xlmr_dir, "dict.txt"))
-    ft_dict = load_dict(langs, args.ft_dict)
+    pre_dict = load_dict(langs, os.path.join(args.xlmr_dir, "dict.txt"), mask=args.retain_mask_id)
+    ft_dict = load_dict(langs, args.ft_dict, mask=args.retain_mask_id)
     data = torch.load(os.path.join(args.xlmr_dir, "model.pt"))
     model = data["model"]
 
