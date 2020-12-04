@@ -62,7 +62,9 @@ class BERT2NATransformerModel(NATransformerModel):
         self.hint_loss_factor = args.hint_loss_factor
         self.hint_from_layer = args.hint_from_layer
         # self.teacher = torch.hub.load('pytorch/fairseq', 'xlmr.base').model.encoder
-        self.teacher =load_teacher(args.teacher_dir, checkpoint_file='model.pt')
+        self.teacher = load_teacher(args.teacher_dir, checkpoint_file='model.pt')
+        logger.info(f"Vocab size: teacher {self.teacher.sentence_encoder.vocab_size} nat {len(decoder.dictionary)}")
+        assert self.teacher.sentence_encoder.vocab_size == len(decoder.dictionary)
         
         #torch.hub.load('pytorch/fairseq', 'roberta.base').model
         # self.freeze_teacher = getattr(args, "freeze_teacher", False)
