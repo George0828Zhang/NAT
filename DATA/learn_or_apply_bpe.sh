@@ -26,7 +26,7 @@ else
                 if [[ -z "$ONLYSRC" ]]; then
                     langs+=($TGTLANG)
                 fi
-                for l in $langs; do \
+                for l in ${langs[@]}; do \
                     train=$CACHE/prep/train.$l
                     valid=$CACHE/prep/valid.$l
                     default=1000000
